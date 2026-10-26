@@ -1,0 +1,38 @@
+# Gradle
+.gradle/
+build/
+
+# Local configuration (SDK path, signing, secrets)
+local.properties
+*.jks
+*.keystore
+keystore.properties
+
+# Android build artifacts
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.hprof
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# Kotlin
+.kotlin/
+
+# Logs and OS noise
+*.log
+.DS_Store
+Thumbs.db
+
+# Tooling
+.vscode/
+.fleet/
