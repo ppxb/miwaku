@@ -1,5 +1,6 @@
 package com.ppxb.miwaku.data.network
 
+import android.annotation.SuppressLint
 import android.util.Base64
 import java.security.MessageDigest
 import javax.crypto.Cipher
@@ -8,19 +9,20 @@ import javax.crypto.spec.SecretKeySpec
 internal object Codec {
     fun token(ts: Long): String = md5Hex("$ts${ApiConfig.TOKEN_SECRET}")
 
-    fun tokenParam(ts: Long): String = "$ts,${ApiConfig.APP_VERSION}"
+    fun tokenParam(ts: Long, version: String = ApiConfig.APP_VERSION): String = "$ts,$version"
 
     /** Returns the decrypted JSON text, trying each known data secret. */
     fun decodeJson(data: String, ts: Long): String? {
         for (secret in ApiConfig.DATA_SECRETS) {
             val text = runCatching { decrypt(data, ts, secret) }.getOrNull()?.trim()
-            if (text != null && text.startsWith("{")) {
+            if (text != null && (text.startsWith("{") || text.startsWith("["))) {
                 return text
             }
         }
         return null
     }
 
+    @SuppressLint("GetInstance") // The remote protocol mandates AES-ECB for response decoding.
     private fun decrypt(data: String, ts: Long, secret: String): String {
         val normalized = normalizeBase64(data)
         val key = SecretKeySpec(md5Hex("$ts$secret").toByteArray(Charsets.UTF_8), "AES")

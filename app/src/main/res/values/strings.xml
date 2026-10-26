@@ -11,6 +11,8 @@
     <string name="action_settings">设置</string>
     <string name="action_back">返回</string>
     <string name="action_cancel">取消</string>
+    <string name="action_retry">重试</string>
+    <string name="error_load_failed">加载失败</string>
 
     <!-- Home -->
     <string name="home_empty_title">欢迎使用 miwaku</string>
@@ -27,10 +29,13 @@
     <string name="explore_subtitle">发现新作品与每周更新</string>
     <string name="explore_empty_title">内容正在准备中</string>
     <string name="explore_empty_description">推荐、排行与每周更新将在这里呈现</string>
+    <string name="explore_section_latest">最新更新</string>
 
     <!-- Category -->
     <string name="category_title">分类</string>
-    <string name="category_subtitle">按题材浏览作品</string>
+    <string name="category_subtitle">热门排行，更多筛选即将上线</string>
+    <string name="category_order_latest">最新</string>
+    <string name="category_order_popular">人气</string>
     <string name="category_empty_title">分类即将上线</string>
     <string name="category_empty_description">题材与标签浏览正在整理</string>
 
@@ -38,6 +43,9 @@
     <string name="search_placeholder">搜索作品、作者或 JM 号</string>
     <string name="search_hint_title">搜索作品</string>
     <string name="search_hint_description">输入关键词、作者名或 JM 号开始查找</string>
+    <string name="search_results_count">找到 %1$d 个结果</string>
+    <string name="search_no_results_title">没有找到结果</string>
+    <string name="search_no_results_description">换个关键词试试</string>
 
     <!-- Settings -->
     <string name="settings_title">设置</string>
