@@ -25,10 +25,9 @@ private const val GlowAngleDegrees = 25f
 private const val EaseSteps = 24
 
 /**
- * SimpMusic's ambient ground for screens without artwork: a [GlowHeight] angled wash in a pastel
- * (light) or deepened (dark) version of [tint], melting into the page through a bottom scrim.
- *
- * Emit it as a sibling behind the screen content.
+ * Ambient ground for screens without artwork: a [GlowHeight] angled wash in a pastel (light) or
+ * deepened (dark) version of [tint], melting into the page through a bottom scrim. Emit it as a
+ * sibling behind the screen content.
  */
 @Composable
 fun AmbientGlow(

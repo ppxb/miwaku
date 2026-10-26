@@ -9,10 +9,8 @@ import kotlinx.coroutines.flow.asStateFlow
 enum class ThemeMode { System, Light, Dark }
 
 /**
- * App-wide appearance settings.
- *
- * SharedPreferences rather than DataStore on purpose: there are two values, they are read once at
- * startup, and the first frame then already has the right theme instead of flashing the default.
+ * App-wide appearance settings. SharedPreferences rather than DataStore on purpose: two values read
+ * once at startup, so the first frame already has the right theme instead of flashing the default.
  */
 class SettingsStore(context: Context) {
     private val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)

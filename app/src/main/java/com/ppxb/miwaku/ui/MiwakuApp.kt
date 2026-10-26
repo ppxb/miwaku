@@ -78,9 +78,8 @@ fun MiwakuApp(
         NavHost(
             navController = navController,
             startDestination = MainTab.Home.route,
-            // SimpMusic's page transition: every destination enters from the left and leaves to
-            // the right, fading in step. Same spec for push and pop, so tab switches and back
-            // read as one consistent horizontal motion.
+            // Every destination enters from the left and leaves to the right, fading in step;
+            // push and pop share the motion, so tab switches and back feel consistent.
             enterTransition = { fadeIn() + slideInHorizontally { -it } },
             exitTransition = { fadeOut() + slideOutHorizontally { it } },
             popEnterTransition = { fadeIn() + slideInHorizontally { -it } },

@@ -54,13 +54,11 @@ private val SearchButtonSize = 56.dp
 private val CapsuleShape = RoundedCornerShape(BarHeight / 2)
 
 /**
- * SimpMusic-style floating bar: one rounded capsule of tabs plus a separate round search button.
- * The capsule caps each tab at [MaxTabWidth], so on tablets it stays a compact centred cluster
- * instead of stretching across the window.
+ * Floating bottom bar: one rounded capsule of tabs plus a separate round search button. The
+ * capsule caps each tab at [MaxTabWidth], so on tablets it stays a compact centred cluster.
  *
- * [liquidGlass] swaps the flat surfaces for a translucent, rimmed pair of panels. It is the beta
- * stand-in for SimpMusic's backdrop blur: it lightens the material without capturing what is
- * behind the bar, which the empty MVP screens have nothing of yet.
+ * [liquidGlass] swaps the flat surfaces for translucent, rimmed panels. It lightens the material
+ * without sampling what is behind the bar, which the empty screens have nothing of yet.
  */
 @Composable
 fun AppBottomBar(

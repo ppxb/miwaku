@@ -61,8 +61,7 @@ fun SettingsScreen(
     val listState = rememberLazyListState()
 
     Box(modifier.fillMaxSize()) {
-        // SimpMusic's ambient ground: the theme's primary washed across the top, and it leaves
-        // with the list instead of hanging off the ceiling.
+        // The theme's primary washed across the top; it leaves with the list instead of staying pinned.
         AmbientGlow(
             tint = MaterialTheme.colorScheme.primary,
             modifier =

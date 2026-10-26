@@ -30,10 +30,7 @@ private val GroupShape = RoundedCornerShape(20.dp)
 private val RowPadding = 16.dp
 private val DividerThickness = 0.5.dp
 
-/**
- * One group of the Settings screen, the way SimpMusic lays it out: a small header above and the
- * rows on one rounded card.
- */
+/** A settings section: a small header above one rounded card holding the rows. */
 @Composable
 fun SettingGroup(
     title: String,

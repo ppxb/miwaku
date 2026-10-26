@@ -45,7 +45,7 @@ fun MiwakuTheme(
     }
 }
 
-/** A quieter touch response than Material's default, as in SimpMusic. */
+/** A quieter touch response than Material's default. */
 @OptIn(ExperimentalMaterial3Api::class)
 private val SoftRipple =
     RippleConfiguration(

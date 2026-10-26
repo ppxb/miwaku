@@ -5,12 +5,8 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.ui.graphics.Color
 
 /**
- * SimpMusic's palette, not an approximation: every role below is the output of
- * material-color-utilities 5.0.1, `SchemeTonalSpot(Hct.fromInt(0xFF8ECAE6), isDark, 0.0,
- * SPEC_2021, PHONE)` — the same generator and seed SimpMusic uses through materialkolor.
- *
- * The light scheme's neutral roles are then replaced with the neutral-grey ramp SimpMusic pins in
- * `withNeutralLightSurfaces()`; dark keeps the generated neutrals.
+ * Material 3 TonalSpot palettes derived from the brand seed `#8ECAE6`. Light neutrals sit on a
+ * neutral-grey ramp; dark keeps the generated blue-tinted neutrals.
  */
 internal val LightColors =
     lightColorScheme(

@@ -6,9 +6,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
 /**
- * The system family throughout: Chinese text falls back cleanly and no font asset has to ship.
- * The scale follows SimpMusic's: a bold oversized title, restrained 14sp body copy and an 11sp
- * bottom-bar label.
+ * System font family throughout: Chinese text falls back cleanly and no font asset ships. Bold
+ * large titles above restrained body copy and an 11sp bottom-bar label.
  */
 val MiwakuTypography =
     Typography(
