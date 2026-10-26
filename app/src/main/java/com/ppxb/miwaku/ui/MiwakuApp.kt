@@ -16,7 +16,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import com.ppxb.miwaku.data.settings.ThemeMode
+import com.ppxb.miwaku.core.data.settings.ThemeMode
 import com.ppxb.miwaku.ui.component.AppBottomBar
 import com.ppxb.miwaku.ui.navigation.CategoryRoute
 import com.ppxb.miwaku.ui.navigation.ExploreRoute

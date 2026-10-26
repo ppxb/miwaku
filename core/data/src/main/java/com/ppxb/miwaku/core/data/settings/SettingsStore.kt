@@ -1,4 +1,4 @@
-package com.ppxb.miwaku.data.settings
+package com.ppxb.miwaku.core.data.settings
 
 import android.content.Context
 import androidx.core.content.edit

@@ -23,4 +23,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "miwaku"
-include(":app")
+include(":app", ":core:model", ":core:network", ":core:data")

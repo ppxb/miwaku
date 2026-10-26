@@ -30,6 +30,11 @@ fun HomeScreen(
 ) {
     Column(modifier.fillMaxSize().statusBarsPadding()) {
         HomeHeader(onOpenSettings = onOpenSettings)
+        Text(
+            text = stringResource(R.string.home_section_recent),
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp),
+        )
         EmptyState(
             icon = Icons.Rounded.AutoStories,
             title = stringResource(R.string.home_empty_title),

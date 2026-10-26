@@ -1,4 +1,4 @@
-package com.ppxb.miwaku.data.model
+package com.ppxb.miwaku.model
 
 data class ComicSummary(
     val id: String,

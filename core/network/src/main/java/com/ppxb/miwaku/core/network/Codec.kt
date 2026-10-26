@@ -1,4 +1,4 @@
-package com.ppxb.miwaku.data.network
+package com.ppxb.miwaku.core.network
 
 import android.annotation.SuppressLint
 import android.util.Base64

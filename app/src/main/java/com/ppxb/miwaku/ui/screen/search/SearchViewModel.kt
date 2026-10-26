@@ -2,8 +2,8 @@ package com.ppxb.miwaku.ui.screen.search
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.ppxb.miwaku.data.AppGraph
-import com.ppxb.miwaku.data.model.ComicSummary
+import com.ppxb.miwaku.core.data.AppGraph
+import com.ppxb.miwaku.model.ComicSummary
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job

@@ -1,4 +1,4 @@
-package com.ppxb.miwaku.data.network
+package com.ppxb.miwaku.core.network
 
 import java.io.IOException
 import java.io.InputStream
@@ -9,18 +9,18 @@ import java.util.zip.GZIPInputStream
 import org.json.JSONObject
 import org.json.JSONTokener
 
-internal data class SettingSnapshot(
+data class SettingSnapshot(
     val baseUrl: String,
     val version: String,
     val imageHost: String,
 )
 
-internal data class ApiPayload(
+data class ApiPayload(
     val value: Any,
     val imageHost: String,
 )
 
-internal class ApiClient {
+class ApiClient {
     @Volatile
     private var snapshot: SettingSnapshot? = null
 

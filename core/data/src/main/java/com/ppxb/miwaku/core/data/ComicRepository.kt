@@ -1,13 +1,13 @@
-package com.ppxb.miwaku.data
+package com.ppxb.miwaku.core.data
 
-import com.ppxb.miwaku.data.model.ComicSummary
-import com.ppxb.miwaku.data.model.SearchResult
-import com.ppxb.miwaku.data.network.ApiClient
-import com.ppxb.miwaku.data.network.ApiPayload
+import com.ppxb.miwaku.core.network.ApiClient
+import com.ppxb.miwaku.core.network.ApiPayload
+import com.ppxb.miwaku.model.ComicSummary
+import com.ppxb.miwaku.model.SearchResult
 import org.json.JSONArray
 import org.json.JSONObject
 
-internal class ComicRepository(
+class ComicRepository internal constructor(
     private val api: ApiClient,
 ) {
     fun latest(page: Int = 0): List<ComicSummary> =

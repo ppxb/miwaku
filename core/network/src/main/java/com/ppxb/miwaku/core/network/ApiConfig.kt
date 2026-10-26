@@ -1,4 +1,4 @@
-package com.ppxb.miwaku.data.network
+package com.ppxb.miwaku.core.network
 
 internal object ApiConfig {
     const val APP_VERSION = "2.1.12"

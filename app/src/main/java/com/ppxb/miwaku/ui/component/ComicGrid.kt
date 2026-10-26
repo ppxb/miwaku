@@ -21,7 +21,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
-import com.ppxb.miwaku.data.model.ComicSummary
+import com.ppxb.miwaku.model.ComicSummary
 
 @Composable
 fun ComicGrid(comics: List<ComicSummary>, modifier: Modifier = Modifier) {

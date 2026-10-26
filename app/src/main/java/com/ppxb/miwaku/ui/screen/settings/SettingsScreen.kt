@@ -42,7 +42,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.ppxb.miwaku.R
-import com.ppxb.miwaku.data.settings.ThemeMode
+import com.ppxb.miwaku.core.data.settings.ThemeMode
 import com.ppxb.miwaku.ui.component.AmbientGlow
 import com.ppxb.miwaku.ui.component.SettingGroup
 import com.ppxb.miwaku.ui.component.SettingItem

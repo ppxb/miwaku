@@ -7,8 +7,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import com.ppxb.miwaku.data.settings.SettingsStore
-import com.ppxb.miwaku.data.settings.ThemeMode
+import com.ppxb.miwaku.core.data.settings.SettingsStore
+import com.ppxb.miwaku.core.data.settings.ThemeMode
 import com.ppxb.miwaku.ui.MiwakuApp
 import com.ppxb.miwaku.ui.theme.MiwakuTheme
 
