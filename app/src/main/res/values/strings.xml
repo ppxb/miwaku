@@ -1,3 +1,51 @@
 <resources>
     <string name="app_name">miwaku</string>
+
+    <!-- Bottom bar -->
+    <string name="tab_home">首页</string>
+    <string name="tab_favorites">收藏</string>
+    <string name="tab_explore">探索</string>
+    <string name="tab_category">分类</string>
+    <string name="action_search">搜索</string>
+    <string name="action_clear">清除</string>
+    <string name="action_settings">设置</string>
+    <string name="action_back">返回</string>
+    <string name="action_cancel">取消</string>
+
+    <!-- Home -->
+    <string name="home_empty_title">欢迎使用 miwaku</string>
+    <string name="home_empty_description">推荐与最近阅读将在这里出现</string>
+
+    <!-- Favorites -->
+    <string name="favorites_title">收藏</string>
+    <string name="favorites_subtitle">你收藏的作品</string>
+    <string name="favorites_empty_title">还没有收藏</string>
+    <string name="favorites_empty_description">在作品详情页收藏后，会显示在这里</string>
+
+    <!-- Explore -->
+    <string name="explore_title">探索</string>
+    <string name="explore_subtitle">发现新作品与每周更新</string>
+    <string name="explore_empty_title">内容正在准备中</string>
+    <string name="explore_empty_description">推荐、排行与每周更新将在这里呈现</string>
+
+    <!-- Category -->
+    <string name="category_title">分类</string>
+    <string name="category_subtitle">按题材浏览作品</string>
+    <string name="category_empty_title">分类即将上线</string>
+    <string name="category_empty_description">题材与标签浏览正在整理</string>
+
+    <!-- Search -->
+    <string name="search_placeholder">搜索作品、作者或 JM 号</string>
+    <string name="search_hint_title">搜索作品</string>
+    <string name="search_hint_description">输入关键词、作者名或 JM 号开始查找</string>
+
+    <!-- Settings -->
+    <string name="settings_title">设置</string>
+    <string name="settings_section_style">样式</string>
+    <string name="settings_theme">主题</string>
+    <string name="settings_theme_system">跟随系统</string>
+    <string name="settings_theme_light">浅色</string>
+    <string name="settings_theme_dark">深色</string>
+    <string name="settings_liquid_glass">Liquid Glass (beta)</string>
+    <string name="settings_liquid_glass_description">半透明玻璃质感的底部导航，仍在测试中</string>
 </resources>

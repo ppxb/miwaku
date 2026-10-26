@@ -4,44 +4,38 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import com.ppxb.miwaku.data.settings.SettingsStore
+import com.ppxb.miwaku.data.settings.ThemeMode
+import com.ppxb.miwaku.ui.MiwakuApp
 import com.ppxb.miwaku.ui.theme.MiwakuTheme
 
 class MainActivity : ComponentActivity() {
+    private val settings by lazy { SettingsStore(applicationContext) }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            MiwakuTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    Greeting(
-                        name = "Android",
-                        modifier = Modifier.padding(innerPadding)
-                    )
+            val themeMode by settings.themeMode.collectAsState()
+            val liquidGlass by settings.liquidGlass.collectAsState()
+            val darkTheme =
+                when (themeMode) {
+                    ThemeMode.System -> isSystemInDarkTheme()
+                    ThemeMode.Light -> false
+                    ThemeMode.Dark -> true
                 }
+
+            MiwakuTheme(darkTheme = darkTheme) {
+                MiwakuApp(
+                    themeMode = themeMode,
+                    onThemeModeChange = settings::setThemeMode,
+                    liquidGlass = liquidGlass,
+                    onLiquidGlassChange = settings::setLiquidGlass,
+                )
             }
         }
-    }
-}
-
-@Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-    Text(
-        text = "Hello $name!",
-        modifier = modifier
-    )
-}
-
-@Preview(showBackground = true)
-@Composable
-fun GreetingPreview() {
-    MiwakuTheme {
-        Greeting("Android")
     }
 }
