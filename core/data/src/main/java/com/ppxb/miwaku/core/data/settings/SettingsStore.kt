@@ -9,8 +9,8 @@ import kotlinx.coroutines.flow.asStateFlow
 enum class ThemeMode { System, Light, Dark }
 
 /**
- * App-wide appearance settings. SharedPreferences rather than DataStore on purpose: two values read
- * once at startup, so the first frame already has the right theme instead of flashing the default.
+ * App-wide appearance settings. SharedPreferences rather than DataStore on purpose: a few values
+ * read once at startup, so the first frame already has the right theme instead of flashing.
  */
 class SettingsStore(context: Context) {
     private val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
@@ -20,6 +20,9 @@ class SettingsStore(context: Context) {
 
     private val _liquidGlass = MutableStateFlow(prefs.getBoolean(KEY_LIQUID_GLASS, false))
     val liquidGlass: StateFlow<Boolean> = _liquidGlass.asStateFlow()
+
+    private val _placeholderCovers = MutableStateFlow(prefs.getBoolean(KEY_PLACEHOLDER_COVERS, false))
+    val placeholderCovers: StateFlow<Boolean> = _placeholderCovers.asStateFlow()
 
     fun setThemeMode(mode: ThemeMode) {
         _themeMode.value = mode
@@ -31,6 +34,11 @@ class SettingsStore(context: Context) {
         prefs.edit { putBoolean(KEY_LIQUID_GLASS, enabled) }
     }
 
+    fun setPlaceholderCovers(enabled: Boolean) {
+        _placeholderCovers.value = enabled
+        prefs.edit { putBoolean(KEY_PLACEHOLDER_COVERS, enabled) }
+    }
+
     private fun readThemeMode(): ThemeMode {
         val stored = prefs.getString(KEY_THEME_MODE, null) ?: return ThemeMode.System
         return ThemeMode.entries.firstOrNull { it.name == stored } ?: ThemeMode.System
@@ -39,5 +47,6 @@ class SettingsStore(context: Context) {
     private companion object {
         const val KEY_THEME_MODE = "theme_mode"
         const val KEY_LIQUID_GLASS = "liquid_glass"
+        const val KEY_PLACEHOLDER_COVERS = "placeholder_covers"
     }
 }

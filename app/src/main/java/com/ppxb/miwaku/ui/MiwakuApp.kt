@@ -47,6 +47,8 @@ fun MiwakuApp(
     onThemeModeChange: (ThemeMode) -> Unit,
     liquidGlass: Boolean,
     onLiquidGlassChange: (Boolean) -> Unit,
+    placeholderCovers: Boolean,
+    onPlaceholderCoversChange: (Boolean) -> Unit,
 ) {
     val navController = rememberNavController()
     val currentDestination by navController.currentBackStackEntryAsState()
@@ -107,17 +109,27 @@ fun MiwakuApp(
                         navController.navigate(SettingsRoute) { launchSingleTop = true }
                     },
                     onOpenComic = { navController.navigateToDetail(it.id) },
+                    placeholderCovers = placeholderCovers,
                 )
             }
             composable<FavoritesRoute> { FavoritesScreen() }
             composable<ExploreRoute> {
-                ExploreScreen(onOpenComic = { navController.navigateToDetail(it.id) })
+                ExploreScreen(
+                    onOpenComic = { navController.navigateToDetail(it.id) },
+                    placeholderCovers = placeholderCovers,
+                )
             }
             composable<CategoryRoute> {
-                CategoryScreen(onOpenComic = { navController.navigateToDetail(it.id) })
+                CategoryScreen(
+                    onOpenComic = { navController.navigateToDetail(it.id) },
+                    placeholderCovers = placeholderCovers,
+                )
             }
             composable<SearchRoute> {
-                SearchScreen(onOpenComic = { navController.navigateToDetail(it.id) })
+                SearchScreen(
+                    onOpenComic = { navController.navigateToDetail(it.id) },
+                    placeholderCovers = placeholderCovers,
+                )
             }
             composable<DetailRoute> {
                 DetailScreen(
@@ -125,6 +137,7 @@ fun MiwakuApp(
                     onOpenChapter = { albumId, chapterId ->
                         navController.navigateToReader(albumId, chapterId)
                     },
+                    placeholderCovers = placeholderCovers,
                 )
             }
             composable<ReaderRoute> {
@@ -136,6 +149,8 @@ fun MiwakuApp(
                     onThemeModeChange = onThemeModeChange,
                     liquidGlass = liquidGlass,
                     onLiquidGlassChange = onLiquidGlassChange,
+                    placeholderCovers = placeholderCovers,
+                    onPlaceholderCoversChange = onPlaceholderCoversChange,
                     onBack = { navController.popBackStack() },
                 )
             }

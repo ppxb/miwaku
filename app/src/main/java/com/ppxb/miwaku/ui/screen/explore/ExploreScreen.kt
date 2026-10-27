@@ -26,6 +26,7 @@ import com.ppxb.miwaku.ui.component.PageScaffold
 @Composable
 internal fun ExploreScreen(
     onOpenComic: (ComicSummary) -> Unit,
+    placeholderCovers: Boolean,
     modifier: Modifier = Modifier,
     viewModel: ExploreViewModel = viewModel(),
 ) {
@@ -70,6 +71,7 @@ internal fun ExploreScreen(
                         comics = current.comics,
                         modifier = Modifier.weight(1f),
                         onComicClick = onOpenComic,
+                        placeholderCovers = placeholderCovers,
                     )
                 }
             }

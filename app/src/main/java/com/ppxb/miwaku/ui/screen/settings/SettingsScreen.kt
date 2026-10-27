@@ -54,6 +54,8 @@ fun SettingsScreen(
     onThemeModeChange: (ThemeMode) -> Unit,
     liquidGlass: Boolean,
     onLiquidGlassChange: (Boolean) -> Unit,
+    placeholderCovers: Boolean,
+    onPlaceholderCoversChange: (Boolean) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -117,6 +119,15 @@ fun SettingsScreen(
                             title = stringResource(R.string.settings_liquid_glass),
                             subtitle = stringResource(R.string.settings_liquid_glass_description),
                             switch = liquidGlass to onLiquidGlassChange,
+                        )
+                    }
+                }
+                item {
+                    SettingGroup(title = stringResource(R.string.settings_section_debug)) {
+                        SettingItem(
+                            title = stringResource(R.string.settings_placeholder_covers),
+                            subtitle = stringResource(R.string.settings_placeholder_covers_description),
+                            switch = placeholderCovers to onPlaceholderCoversChange,
                         )
                     }
                 }

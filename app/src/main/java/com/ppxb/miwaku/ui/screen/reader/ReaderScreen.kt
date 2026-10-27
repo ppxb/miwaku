@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -142,7 +143,8 @@ private fun ReaderPageImage(
     index: Int,
 ) {
     val context = LocalContext.current
-    val widthPx = context.resources.displayMetrics.widthPixels
+    val resources = LocalResources.current
+    val widthPx = resources.displayMetrics.widthPixels
     val request =
         remember(page.url, page.splitCount, widthPx) {
             ImageRequest.Builder(context)

@@ -28,6 +28,7 @@ import com.ppxb.miwaku.ui.component.PageScaffold
 @Composable
 internal fun CategoryScreen(
     onOpenComic: (ComicSummary) -> Unit,
+    placeholderCovers: Boolean,
     modifier: Modifier = Modifier,
     viewModel: CategoryViewModel = viewModel(),
 ) {
@@ -89,6 +90,7 @@ internal fun CategoryScreen(
                         comics = current.comics,
                         modifier = Modifier.weight(1f),
                         onComicClick = onOpenComic,
+                        placeholderCovers = placeholderCovers,
                     )
                 }
         }

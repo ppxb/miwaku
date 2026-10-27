@@ -51,6 +51,7 @@ import com.ppxb.miwaku.ui.component.ErrorState
 @Composable
 internal fun SearchScreen(
     onOpenComic: (ComicSummary) -> Unit,
+    placeholderCovers: Boolean,
     modifier: Modifier = Modifier,
     viewModel: SearchViewModel = viewModel(),
 ) {
@@ -128,6 +129,7 @@ internal fun SearchScreen(
                         comics = current.comics,
                         modifier = Modifier.weight(1f),
                         onComicClick = onOpenComic,
+                        placeholderCovers = placeholderCovers,
                     )
                 }
         }

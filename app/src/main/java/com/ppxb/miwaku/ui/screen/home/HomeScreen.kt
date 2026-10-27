@@ -32,6 +32,7 @@ import com.ppxb.miwaku.ui.component.EmptyState
 internal fun HomeScreen(
     onOpenSettings: () -> Unit,
     onOpenComic: (ComicSummary) -> Unit,
+    placeholderCovers: Boolean,
     modifier: Modifier = Modifier,
     viewModel: HomeViewModel = viewModel(),
 ) {
@@ -56,6 +57,7 @@ internal fun HomeScreen(
                 comics = history,
                 modifier = Modifier.weight(1f).padding(horizontal = 20.dp),
                 onComicClick = onOpenComic,
+                placeholderCovers = placeholderCovers,
             )
         }
     }

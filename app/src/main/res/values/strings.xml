@@ -70,4 +70,7 @@
     <string name="settings_theme_dark">深色</string>
     <string name="settings_liquid_glass">Liquid Glass (BETA)</string>
     <string name="settings_liquid_glass_description">开启 IOS 的 liquid glass 效果（需要 Android 13+）</string>
+    <string name="settings_section_debug">调试</string>
+    <string name="settings_placeholder_covers">封面占位图</string>
+    <string name="settings_placeholder_covers_description">用灰色图块替换封面和预览图，阅读器不受影响</string>
 </resources>

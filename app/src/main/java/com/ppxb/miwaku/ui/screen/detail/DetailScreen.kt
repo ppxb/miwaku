@@ -48,6 +48,7 @@ import com.ppxb.miwaku.ui.component.ErrorState
 internal fun DetailScreen(
     onBack: () -> Unit,
     onOpenChapter: (albumId: String, chapterId: String) -> Unit,
+    placeholderCovers: Boolean,
     modifier: Modifier = Modifier,
     viewModel: DetailViewModel = viewModel(),
 ) {
@@ -75,6 +76,7 @@ internal fun DetailScreen(
                 DetailContent(
                     detail = current.detail,
                     onOpenChapter = onOpenChapter,
+                    placeholderCovers = placeholderCovers,
                     modifier = Modifier.weight(1f),
                 )
         }
@@ -109,6 +111,7 @@ private fun DetailTopBar(onBack: () -> Unit) {
 private fun DetailContent(
     detail: ComicDetail,
     onOpenChapter: (albumId: String, chapterId: String) -> Unit,
+    placeholderCovers: Boolean,
     modifier: Modifier,
 ) {
     LazyColumn(
@@ -118,17 +121,28 @@ private fun DetailContent(
     ) {
         item {
             Row(verticalAlignment = Alignment.Top) {
-                AsyncImage(
-                    model = detail.coverUrl,
-                    contentDescription = detail.title,
-                    contentScale = ContentScale.Crop,
-                    modifier =
-                        Modifier
-                            .width(112.dp)
-                            .aspectRatio(3f / 4f)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(MaterialTheme.colorScheme.surfaceContainer),
-                )
+                if (placeholderCovers) {
+                    Box(
+                        modifier =
+                            Modifier
+                                .width(112.dp)
+                                .aspectRatio(3f / 4f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                    )
+                } else {
+                    AsyncImage(
+                        model = detail.coverUrl,
+                        contentDescription = detail.title,
+                        contentScale = ContentScale.Crop,
+                        modifier =
+                            Modifier
+                                .width(112.dp)
+                                .aspectRatio(3f / 4f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.surfaceContainer),
+                    )
+                }
                 Spacer(Modifier.width(16.dp))
                 Column(Modifier.weight(1f)) {
                     Text(

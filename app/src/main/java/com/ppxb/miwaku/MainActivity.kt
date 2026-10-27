@@ -21,6 +21,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val themeMode by settings.themeMode.collectAsState()
             val liquidGlass by settings.liquidGlass.collectAsState()
+            val placeholderCovers by settings.placeholderCovers.collectAsState()
             val darkTheme =
                 when (themeMode) {
                     ThemeMode.System -> isSystemInDarkTheme()
@@ -34,6 +35,8 @@ class MainActivity : ComponentActivity() {
                     onThemeModeChange = settings::setThemeMode,
                     liquidGlass = liquidGlass,
                     onLiquidGlassChange = settings::setLiquidGlass,
+                    placeholderCovers = placeholderCovers,
+                    onPlaceholderCoversChange = settings::setPlaceholderCovers,
                 )
             }
         }
