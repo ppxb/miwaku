@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -25,6 +26,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -62,6 +64,12 @@ internal fun ExploreScreen(
     var topBarHeight by remember { mutableStateOf(0.dp) }
     val density = LocalDensity.current
     val bottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 88.dp
+    val gridState = rememberLazyGridState()
+    val scrolled by remember {
+        derivedStateOf {
+            gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 0
+        }
+    }
 
     Box(modifier.fillMaxSize()) {
         when (val current = state) {
@@ -104,6 +112,7 @@ internal fun ExploreScreen(
                         onComicClick = onOpenComic,
                         placeholderCovers = placeholderCovers,
                         contentPadding = PaddingValues(top = topBarHeight + 16.dp, bottom = bottomPadding),
+                        state = gridState,
                     )
                 }
             }
@@ -117,7 +126,13 @@ internal fun ExploreScreen(
                 Modifier
                     .align(Alignment.TopCenter)
                     .fillMaxWidth()
-                    .hazeBlur(HazeInput.Sources(hazeState), topBarBlurStyle())
+                    .then(
+                        if (scrolled) {
+                            Modifier.hazeBlur(HazeInput.Sources(hazeState), topBarBlurStyle())
+                        } else {
+                            Modifier
+                        },
+                    )
                     .onGloballyPositioned { coordinates ->
                         topBarHeight = with(density) { coordinates.size.height.toDp() }
                     },
