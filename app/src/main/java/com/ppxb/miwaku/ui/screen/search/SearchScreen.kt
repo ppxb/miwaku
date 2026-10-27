@@ -43,12 +43,14 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ppxb.miwaku.R
+import com.ppxb.miwaku.model.ComicSummary
 import com.ppxb.miwaku.ui.component.ComicGrid
 import com.ppxb.miwaku.ui.component.EmptyState
 import com.ppxb.miwaku.ui.component.ErrorState
 
 @Composable
 internal fun SearchScreen(
+    onOpenComic: (ComicSummary) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: SearchViewModel = viewModel(),
 ) {
@@ -125,6 +127,7 @@ internal fun SearchScreen(
                     ComicGrid(
                         comics = current.comics,
                         modifier = Modifier.weight(1f),
+                        onComicClick = onOpenComic,
                     )
                 }
         }

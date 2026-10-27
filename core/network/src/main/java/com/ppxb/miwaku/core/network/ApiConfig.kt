@@ -3,6 +3,7 @@ package com.ppxb.miwaku.core.network
 internal object ApiConfig {
     const val APP_VERSION = "2.1.12"
     const val TOKEN_SECRET = "185Hcomic3PAPP7R"
+    const val CHAPTER_SECRET = "18comicAPPContent"
     val DATA_SECRETS = listOf("185Hcomic3PAPP7R", "18comicAPPContent")
 
     const val USER_AGENT =

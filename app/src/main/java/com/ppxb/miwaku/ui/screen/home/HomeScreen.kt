@@ -16,31 +16,48 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ppxb.miwaku.R
+import com.ppxb.miwaku.model.ComicSummary
+import com.ppxb.miwaku.ui.component.ComicGrid
 import com.ppxb.miwaku.ui.component.EmptyState
 
 @Composable
-fun HomeScreen(
+internal fun HomeScreen(
     onOpenSettings: () -> Unit,
+    onOpenComic: (ComicSummary) -> Unit,
     modifier: Modifier = Modifier,
+    viewModel: HomeViewModel = viewModel(),
 ) {
+    val history by viewModel.history.collectAsState()
+
     Column(modifier.fillMaxSize().statusBarsPadding()) {
         HomeHeader(onOpenSettings = onOpenSettings)
         Text(
             text = stringResource(R.string.home_section_recent),
             style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp),
+            modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 8.dp),
         )
-        EmptyState(
-            icon = Icons.Rounded.AutoStories,
-            title = stringResource(R.string.home_empty_title),
-            description = stringResource(R.string.home_empty_description),
-            modifier = Modifier.weight(1f).padding(horizontal = 20.dp),
-        )
+        if (history.isEmpty()) {
+            EmptyState(
+                icon = Icons.Rounded.AutoStories,
+                title = stringResource(R.string.home_empty_title),
+                description = stringResource(R.string.home_empty_description),
+                modifier = Modifier.weight(1f).padding(horizontal = 20.dp),
+            )
+        } else {
+            ComicGrid(
+                comics = history,
+                modifier = Modifier.weight(1f).padding(horizontal = 20.dp),
+                onComicClick = onOpenComic,
+            )
+        }
     }
 }
 

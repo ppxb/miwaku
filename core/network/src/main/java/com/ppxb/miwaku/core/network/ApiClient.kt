@@ -5,6 +5,7 @@ import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.util.concurrent.CancellationException
 import java.util.zip.GZIPInputStream
 import org.json.JSONObject
 import org.json.JSONTokener
@@ -24,42 +25,44 @@ class ApiClient {
     @Volatile
     private var snapshot: SettingSnapshot? = null
 
-    @Synchronized
     fun fetchSetting(): Result<SettingSnapshot> {
         snapshot?.let { return Result.success(it) }
-        val failures = mutableListOf<String>()
-        val deadline = System.currentTimeMillis() + TOTAL_TIMEOUT_MS
+        return synchronized(this) {
+            snapshot?.let { return@synchronized Result.success(it) }
+            val failures = mutableListOf<String>()
+            val deadline = System.currentTimeMillis() + TOTAL_TIMEOUT_MS
 
-        for (base in ApiConfig.API_BASES) {
-            val remaining = deadline - System.currentTimeMillis()
-            if (remaining <= 0) break
+            for (base in ApiConfig.API_BASES) {
+                val remaining = deadline - System.currentTimeMillis()
+                if (remaining <= 0) break
 
-            val ts = now()
-            val result =
-                runCatching {
-                    val setting =
-                        requestJson(
-                            base = base,
-                            path = "/setting",
-                            params = mapOf("app_img_shunt" to "1", "t" to "$ts"),
-                            ts = ts,
-                            version = ApiConfig.APP_VERSION,
-                            timeoutMs = minOf(TIMEOUT_MS.toLong(), remaining).toInt(),
-                        ) as? JSONObject ?: throw IOException("unexpected setting payload")
-                    val version = setting.string("jm3_version")
-                    val imageHost = setting.string("img_host").trimEnd('/')
-                    if (version.isEmpty() || imageHost.isEmpty()) {
-                        throw IOException("missing jm3_version/img_host")
+                val ts = now()
+                val result =
+                    runCatching {
+                        val setting =
+                            requestJson(
+                                base = base,
+                                path = "/setting",
+                                params = mapOf("app_img_shunt" to "1", "t" to "$ts"),
+                                ts = ts,
+                                version = ApiConfig.APP_VERSION,
+                                timeoutMs = minOf(TIMEOUT_MS.toLong(), remaining).toInt(),
+                            ) as? JSONObject ?: throw IOException("unexpected setting payload")
+                        val version = setting.string("jm3_version")
+                        val imageHost = setting.string("img_host").trimEnd('/')
+                        if (version.isEmpty() || imageHost.isEmpty()) {
+                            throw IOException("missing jm3_version/img_host")
+                        }
+                        SettingSnapshot(base, version, imageHost)
                     }
-                    SettingSnapshot(base, version, imageHost)
+                result.getOrNull()?.let {
+                    snapshot = it
+                    return Result.success(it)
                 }
-            result.getOrNull()?.let {
-                snapshot = it
-                return Result.success(it)
+                failures += "${base.hostName()}: ${result.exceptionOrNull()?.message}"
             }
-            failures += "${base.hostName()}: ${result.exceptionOrNull()?.message}"
+            Result.failure(IOException(failures.joinToString("; ")))
         }
-        return Result.failure(IOException(failures.joinToString("; ")))
     }
 
     fun getJson(
@@ -81,12 +84,37 @@ class ApiClient {
                     ),
                 imageHost = setting.imageHost,
             )
-        } catch (e: Exception) {
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
             if (snapshot === setting) {
                 snapshot = null
             }
             throw e
         }
+    }
+
+    fun getChapterTemplate(chapterId: String): String {
+        val setting = fetchSetting().getOrThrow()
+        val ts = now()
+        return requestText(
+            base = setting.baseUrl,
+            path = "/chapter_view_template",
+            params =
+                mapOf(
+                    "id" to chapterId,
+                    "mode" to "vertical",
+                    "page" to "0",
+                    "app_img_shunt" to "1",
+                    "express" to "off",
+                    "v" to "$ts",
+                    "t" to "$ts",
+                ),
+            ts = ts,
+            version = setting.version,
+            secret = ApiConfig.CHAPTER_SECRET,
+            timeoutMs = TIMEOUT_MS,
+        )
     }
 
     private fun requestJson(
@@ -97,6 +125,35 @@ class ApiClient {
         version: String,
         timeoutMs: Int,
     ): Any {
+        val body =
+            requestText(
+                base = base,
+                path = path,
+                params = params,
+                ts = ts,
+                version = version,
+                secret = ApiConfig.TOKEN_SECRET,
+                timeoutMs = timeoutMs,
+            )
+        val outer = JSONObject(body)
+        val code = outer.optInt("code", -1)
+        if (code != 200) {
+            throw IOException("code $code")
+        }
+        val decoded = Codec.decodeJson(outer.optString("data"), ts)
+            ?: throw IOException("undecodable data")
+        return JSONTokener(decoded).nextValue()
+    }
+
+    private fun requestText(
+        base: String,
+        path: String,
+        params: Map<String, String>,
+        ts: Long,
+        version: String,
+        secret: String,
+        timeoutMs: Int,
+    ): String {
         val query =
             params.entries.joinToString("&") { (key, value) ->
                 "${encode(key)}=${encode(value)}"
@@ -107,7 +164,7 @@ class ApiClient {
                 requestMethod = "GET"
                 connectTimeout = timeoutMs
                 readTimeout = timeoutMs
-                setRequestProperty("token", Codec.token(ts))
+                setRequestProperty("token", Codec.token(ts, secret))
                 setRequestProperty("tokenparam", Codec.tokenParam(ts, version))
                 setRequestProperty("user-agent", ApiConfig.USER_AGENT)
                 setRequestProperty("accept", "*/*")
@@ -117,15 +174,7 @@ class ApiClient {
             if (status !in 200..299) {
                 throw IOException("HTTP $status")
             }
-            val body = connection.inputStream.use { it.readText(connection.contentEncoding) }
-            val outer = JSONObject(body)
-            val code = outer.optInt("code", -1)
-            if (code != 200) {
-                throw IOException("code $code")
-            }
-            val decoded = Codec.decodeJson(outer.optString("data"), ts)
-                ?: throw IOException("undecodable data")
-            return JSONTokener(decoded).nextValue()
+            return connection.inputStream.use { it.readText(connection.contentEncoding) }
         } finally {
             connection.disconnect()
         }

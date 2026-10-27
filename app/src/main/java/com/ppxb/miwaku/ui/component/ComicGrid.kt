@@ -1,6 +1,7 @@
 package com.ppxb.miwaku.ui.component
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -24,7 +25,11 @@ import coil.compose.AsyncImage
 import com.ppxb.miwaku.model.ComicSummary
 
 @Composable
-fun ComicGrid(comics: List<ComicSummary>, modifier: Modifier = Modifier) {
+fun ComicGrid(
+    comics: List<ComicSummary>,
+    modifier: Modifier = Modifier,
+    onComicClick: (ComicSummary) -> Unit = {},
+) {
     LazyVerticalGrid(
         columns = GridCells.Fixed(3),
         modifier = modifier,
@@ -32,13 +37,18 @@ fun ComicGrid(comics: List<ComicSummary>, modifier: Modifier = Modifier) {
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        items(comics, key = { it.id }) { ComicCard(it) }
+        items(comics, key = { it.id }) { comic ->
+            ComicCard(comic = comic, onClick = { onComicClick(comic) })
+        }
     }
 }
 
 @Composable
-private fun ComicCard(comic: ComicSummary) {
-    Column {
+private fun ComicCard(
+    comic: ComicSummary,
+    onClick: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         AsyncImage(
             model = comic.coverUrl,
             contentDescription = comic.title,

@@ -14,6 +14,7 @@ import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import com.ppxb.miwaku.R
 import kotlinx.serialization.Serializable
+import kotlin.reflect.KClass
 
 @Serializable
 data object HomeRoute
@@ -33,6 +34,15 @@ data object SearchRoute
 @Serializable
 data object SettingsRoute
 
+@Serializable
+data class DetailRoute(val id: String)
+
+@Serializable
+data class ReaderRoute(
+    val albumId: String,
+    val chapterId: String,
+)
+
 /** The four bottom-bar destinations, in display order. */
 enum class MainTab(
     val route: Any,
@@ -48,6 +58,9 @@ enum class MainTab(
 /** True when the current destination, or any of its parent graphs, matches [route]. */
 fun NavDestination?.isOn(route: Any): Boolean =
     this?.hierarchy?.any { it.hasRoute(route::class) } == true
+
+fun NavDestination?.isOn(route: KClass<*>): Boolean =
+    this?.hierarchy?.any { it.hasRoute(route) } == true
 
 /** Switches tabs while keeping every tab's scroll/input state for the next visit. */
 fun NavController.navigateToTab(tab: MainTab) {
@@ -68,4 +81,12 @@ fun NavController.navigateToSearch() {
         launchSingleTop = true
         restoreState = true
     }
+}
+
+fun NavController.navigateToDetail(id: String) {
+    navigate(DetailRoute(id)) { launchSingleTop = true }
+}
+
+fun NavController.navigateToReader(albumId: String, chapterId: String) {
+    navigate(ReaderRoute(albumId, chapterId)) { launchSingleTop = true }
 }

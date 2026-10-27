@@ -48,6 +48,19 @@
     <string name="search_no_results_title">没有找到结果</string>
     <string name="search_no_results_description">换个关键词试试</string>
 
+    <!-- Detail -->
+    <string name="detail_title">详情</string>
+    <string name="detail_author">作者：%1$s</string>
+    <string name="detail_chapters">章节</string>
+    <string name="detail_chapter_count">%1$d 话</string>
+    <string name="detail_no_chapters">暂无章节</string>
+
+    <!-- Reader -->
+    <string name="reader_title">阅读</string>
+    <string name="reader_page">第 %1$d 页</string>
+    <string name="reader_empty_title">本章没有图片</string>
+    <string name="reader_empty_description">换一章试试</string>
+
     <!-- Settings -->
     <string name="settings_title">设置</string>
     <string name="settings_section_style">样式</string>
@@ -55,6 +68,6 @@
     <string name="settings_theme_system">跟随系统</string>
     <string name="settings_theme_light">浅色</string>
     <string name="settings_theme_dark">深色</string>
-    <string name="settings_liquid_glass">Liquid Glass (beta)</string>
-    <string name="settings_liquid_glass_description">半透明玻璃质感的底部导航，仍在测试中</string>
+    <string name="settings_liquid_glass">Liquid Glass (BETA)</string>
+    <string name="settings_liquid_glass_description">开启 IOS 的 liquid glass 效果（需要 Android 13+）</string>
 </resources>

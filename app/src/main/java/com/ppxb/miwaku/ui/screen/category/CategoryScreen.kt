@@ -19,6 +19,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ppxb.miwaku.R
+import com.ppxb.miwaku.model.ComicSummary
 import com.ppxb.miwaku.ui.component.ComicGrid
 import com.ppxb.miwaku.ui.component.EmptyState
 import com.ppxb.miwaku.ui.component.ErrorState
@@ -26,6 +27,7 @@ import com.ppxb.miwaku.ui.component.PageScaffold
 
 @Composable
 internal fun CategoryScreen(
+    onOpenComic: (ComicSummary) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: CategoryViewModel = viewModel(),
 ) {
@@ -86,6 +88,7 @@ internal fun CategoryScreen(
                     ComicGrid(
                         comics = current.comics,
                         modifier = Modifier.weight(1f),
+                        onComicClick = onOpenComic,
                     )
                 }
         }

@@ -7,14 +7,14 @@ import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
 
 internal object Codec {
-    fun token(ts: Long): String = md5Hex("$ts${ApiConfig.TOKEN_SECRET}")
+    fun token(ts: Long, secret: String = ApiConfig.TOKEN_SECRET): String = md5Hex("$ts$secret")
 
     fun tokenParam(ts: Long, version: String = ApiConfig.APP_VERSION): String = "$ts,$version"
 
     /** Returns the decrypted JSON text, trying each known data secret. */
     fun decodeJson(data: String, ts: Long): String? {
         for (secret in ApiConfig.DATA_SECRETS) {
-            val text = runCatching { decrypt(data, ts, secret) }.getOrNull()?.trim()
+            val text = runCatching { decrypt(data, ts, secret) }.getOrNull()?.trim()?.removePrefix("\uFEFF")
             if (text != null && (text.startsWith("{") || text.startsWith("["))) {
                 return text
             }

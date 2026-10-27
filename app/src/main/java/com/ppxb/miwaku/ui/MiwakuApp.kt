@@ -19,19 +19,25 @@ import androidx.navigation.compose.rememberNavController
 import com.ppxb.miwaku.core.data.settings.ThemeMode
 import com.ppxb.miwaku.ui.component.AppBottomBar
 import com.ppxb.miwaku.ui.navigation.CategoryRoute
+import com.ppxb.miwaku.ui.navigation.DetailRoute
 import com.ppxb.miwaku.ui.navigation.ExploreRoute
 import com.ppxb.miwaku.ui.navigation.FavoritesRoute
 import com.ppxb.miwaku.ui.navigation.HomeRoute
 import com.ppxb.miwaku.ui.navigation.MainTab
+import com.ppxb.miwaku.ui.navigation.ReaderRoute
 import com.ppxb.miwaku.ui.navigation.SearchRoute
 import com.ppxb.miwaku.ui.navigation.SettingsRoute
 import com.ppxb.miwaku.ui.navigation.isOn
+import com.ppxb.miwaku.ui.navigation.navigateToDetail
+import com.ppxb.miwaku.ui.navigation.navigateToReader
 import com.ppxb.miwaku.ui.navigation.navigateToSearch
 import com.ppxb.miwaku.ui.navigation.navigateToTab
 import com.ppxb.miwaku.ui.screen.category.CategoryScreen
+import com.ppxb.miwaku.ui.screen.detail.DetailScreen
 import com.ppxb.miwaku.ui.screen.explore.ExploreScreen
 import com.ppxb.miwaku.ui.screen.favorites.FavoritesScreen
 import com.ppxb.miwaku.ui.screen.home.HomeScreen
+import com.ppxb.miwaku.ui.screen.reader.ReaderScreen
 import com.ppxb.miwaku.ui.screen.search.SearchScreen
 import com.ppxb.miwaku.ui.screen.settings.SettingsScreen
 
@@ -53,8 +59,11 @@ fun MiwakuApp(
             destination.isOn(SearchRoute) -> null
             else -> MainTab.entries.firstOrNull { destination.isOn(it.route) } ?: MainTab.Home
         }
-    // Settings is a detail page with its own back arrow, so the bar steps aside.
-    val showBottomBar = !destination.isOn(SettingsRoute)
+    // Settings, detail and reader are nested pages with their own back arrow, so the bar steps aside.
+    val showBottomBar =
+        !destination.isOn(SettingsRoute) &&
+            !destination.isOn(DetailRoute::class) &&
+            !destination.isOn(ReaderRoute::class)
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -93,12 +102,34 @@ fun MiwakuApp(
                     .padding(bottom = innerPadding.calculateBottomPadding()),
         ) {
             composable<HomeRoute> {
-                HomeScreen(onOpenSettings = { navController.navigate(SettingsRoute) })
+                HomeScreen(
+                    onOpenSettings = {
+                        navController.navigate(SettingsRoute) { launchSingleTop = true }
+                    },
+                    onOpenComic = { navController.navigateToDetail(it.id) },
+                )
             }
             composable<FavoritesRoute> { FavoritesScreen() }
-            composable<ExploreRoute> { ExploreScreen() }
-            composable<CategoryRoute> { CategoryScreen() }
-            composable<SearchRoute> { SearchScreen() }
+            composable<ExploreRoute> {
+                ExploreScreen(onOpenComic = { navController.navigateToDetail(it.id) })
+            }
+            composable<CategoryRoute> {
+                CategoryScreen(onOpenComic = { navController.navigateToDetail(it.id) })
+            }
+            composable<SearchRoute> {
+                SearchScreen(onOpenComic = { navController.navigateToDetail(it.id) })
+            }
+            composable<DetailRoute> {
+                DetailScreen(
+                    onBack = { navController.popBackStack() },
+                    onOpenChapter = { albumId, chapterId ->
+                        navController.navigateToReader(albumId, chapterId)
+                    },
+                )
+            }
+            composable<ReaderRoute> {
+                ReaderScreen(onBack = { navController.popBackStack() })
+            }
             composable<SettingsRoute> {
                 SettingsScreen(
                     themeMode = themeMode,
