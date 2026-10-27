@@ -4,7 +4,6 @@ import android.app.Activity
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -31,32 +30,41 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
-import coil.compose.rememberAsyncImagePainter
+import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import coil.size.Dimension
 import coil.size.Size
 import com.ppxb.miwaku.R
 import com.ppxb.miwaku.model.ChapterContent
@@ -69,6 +77,7 @@ import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.blur.hazeBlur
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
+import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.distinctUntilChanged
 
 @Composable
@@ -85,7 +94,16 @@ internal fun ReaderScreen(
     val listState = rememberLazyListState()
     val hazeState = rememberHazeState()
     var controlsVisible by rememberSaveable { mutableStateOf(false) }
+    var initialScrollDone by rememberSaveable { mutableStateOf(false) }
     val currentPage by remember { derivedStateOf { listState.firstVisibleItemIndex } }
+    val pageSizes = remember { mutableStateMapOf<String, IntSize>() }
+    val fallbackRatio = remember(pageSizes.size) { medianPageRatio(pageSizes.values) }
+    val density = LocalDensity.current
+    val screenWidthDp = LocalConfiguration.current.screenWidthDp
+    val imageWidthPx =
+        remember(screenWidthDp, density.density) {
+            (screenWidthDp * density.density).roundToInt().coerceAtLeast(1)
+        }
     val view = LocalView.current
     val window = (view.context as? Activity)?.window
 
@@ -110,8 +128,11 @@ internal fun ReaderScreen(
     LaunchedEffect(content) {
         val pages = content?.pages ?: return@LaunchedEffect
         if (pages.isEmpty()) return@LaunchedEffect
-        val target = viewModel.initialPage.coerceIn(0, pages.lastIndex)
-        if (target > 0) listState.scrollToItem(target)
+        if (!initialScrollDone) {
+            initialScrollDone = true
+            val target = viewModel.initialPage.coerceIn(0, pages.lastIndex)
+            if (target > 0) listState.scrollToItem(target)
+        }
         snapshotFlow { listState.firstVisibleItemIndex }
             .distinctUntilChanged()
             .collect { viewModel.recordPage(it) }
@@ -149,6 +170,9 @@ internal fun ReaderScreen(
                     ReaderPages(
                         content = current.content,
                         listState = listState,
+                        pageSizes = pageSizes,
+                        fallbackRatio = fallbackRatio,
+                        imageWidthPx = imageWidthPx,
                         modifier =
                             Modifier
                                 .fillMaxSize()
@@ -253,6 +277,9 @@ private fun ReaderBottomBar(
 private fun ReaderPages(
     content: ChapterContent,
     listState: LazyListState,
+    pageSizes: SnapshotStateMap<String, IntSize>,
+    fallbackRatio: Float,
+    imageWidthPx: Int,
     modifier: Modifier,
 ) {
     LazyColumn(
@@ -260,8 +287,19 @@ private fun ReaderPages(
         modifier = modifier.fillMaxWidth(),
         contentPadding = PaddingValues(vertical = 4.dp),
     ) {
-        itemsIndexed(content.pages) { index, page ->
-            ReaderPageImage(page = page, index = index)
+        itemsIndexed(
+            items = content.pages,
+            key = { _, page -> page.url },
+            contentType = { _, _ -> "page" },
+        ) { index, page ->
+            ReaderPageImage(
+                page = page,
+                index = index,
+                knownSize = pageSizes[page.url],
+                fallbackRatio = fallbackRatio,
+                imageWidthPx = imageWidthPx,
+                onSize = { size -> pageSizes[page.url] = size },
+            )
         }
     }
 }
@@ -270,38 +308,106 @@ private fun ReaderPages(
 private fun ReaderPageImage(
     page: ReaderPage,
     index: Int,
+    knownSize: IntSize?,
+    fallbackRatio: Float,
+    imageWidthPx: Int,
+    onSize: (IntSize) -> Unit,
 ) {
     val context = LocalContext.current
+    var attempt by remember { mutableIntStateOf(0) }
+    var failed by remember { mutableStateOf(false) }
     val request =
-        remember(page.url, page.splitCount) {
+        remember(page.url, page.splitCount, imageWidthPx, attempt) {
+            val url = if (attempt == 0) page.url else page.url.withRetry(attempt)
             ImageRequest.Builder(context)
-                .data(page.url)
-                .size(Size.ORIGINAL)
+                .data(url)
                 .apply {
                     if (page.splitCount > 0) {
+                        // Scrambled pages need their exact original pixel rows, so they cannot be
+                        // downsampled before the rows are reordered. The transformation itself
+                        // caps the output height.
+                        size(Size.ORIGINAL)
                         transformations(ScrambleTransformation(page.splitCount))
+                    } else {
+                        size(Dimension.Pixels(imageWidthPx), Dimension.Undefined)
                     }
                 }
-                .crossfade(true)
+                .crossfade(false)
                 .build()
         }
-    val painter = rememberAsyncImagePainter(request)
-    val source = painter.intrinsicSize
     val ratio =
-        if (source.width.isFinite() && source.height.isFinite() && source.width > 0f && source.height > 0f) {
-            source.width / source.height
+        if (knownSize != null && knownSize.width > 0 && knownSize.height > 0) {
+            knownSize.width.toFloat() / knownSize.height
         } else {
-            3f / 4f
+            fallbackRatio
         }
 
-    Image(
-        painter = painter,
-        contentDescription = stringResource(R.string.reader_page, index + 1),
-        contentScale = ContentScale.FillWidth,
+    Box(
         modifier =
             Modifier
                 .fillMaxWidth()
                 .aspectRatio(ratio)
+                .clipToBounds()
                 .background(MaterialTheme.colorScheme.surfaceContainer),
-    )
+    ) {
+        AsyncImage(
+            model = request,
+            contentDescription = stringResource(R.string.reader_page, index + 1),
+            contentScale = ContentScale.FillWidth,
+            modifier = Modifier.fillMaxSize(),
+            onSuccess = { success ->
+                failed = false
+                val drawable = success.result.drawable
+                val width = drawable.intrinsicWidth
+                val height = drawable.intrinsicHeight
+                if (width > 0 && height > 0) {
+                    onSize(IntSize(width, height))
+                }
+            },
+            onError = { failed = true },
+        )
+        if (failed) {
+            Column(
+                modifier = Modifier.align(Alignment.Center),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    text = stringResource(R.string.error_load_failed),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(
+                    onClick = {
+                        failed = false
+                        attempt += 1
+                    },
+                ) {
+                    Text(stringResource(R.string.action_retry))
+                }
+            }
+        }
+    }
 }
+
+private fun medianPageRatio(sizes: Collection<IntSize>): Float {
+    if (sizes.size < MIN_RATIO_SAMPLES) return DEFAULT_PAGE_RATIO
+    val ratios =
+        sizes
+            .mapNotNull { size ->
+                if (size.width > 0 && size.height > 0) {
+                    size.width.toFloat() / size.height
+                } else {
+                    null
+                }
+            }.sorted()
+    if (ratios.size < MIN_RATIO_SAMPLES) return DEFAULT_PAGE_RATIO
+    return ratios[ratios.size / 2]
+}
+
+private fun String.withRetry(attempt: Int): String {
+    val separator = if ('?' in this) '&' else '?'
+    return "$this${separator}retry=$attempt"
+}
+
+private const val DEFAULT_PAGE_RATIO = 3f / 4f
+private const val MIN_RATIO_SAMPLES = 3
