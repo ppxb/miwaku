@@ -2,12 +2,11 @@ package com.ppxb.miwaku.core.network
 
 import android.util.Log
 import java.io.IOException
-import java.io.InputStream
-import java.net.HttpURLConnection
-import java.net.URL
-import java.net.URLEncoder
 import java.util.concurrent.CancellationException
-import java.util.zip.GZIPInputStream
+import java.util.concurrent.TimeUnit
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONObject
 import org.json.JSONTokener
 
@@ -23,6 +22,7 @@ data class ApiPayload(
 )
 
 class ApiClient(
+    private val httpClient: OkHttpClient = OkHttpClient(),
     private val settingStore: SettingSnapshotStore? = null,
 ) {
     @Volatile
@@ -172,42 +172,35 @@ class ApiClient(
         version: String,
         timeoutMs: Int,
     ): String {
-        val query =
-            params.entries.joinToString("&") { (key, value) ->
-                "${encode(key)}=${encode(value)}"
+        val baseUrl = "$base$path".toHttpUrlOrNull() ?: throw IOException("invalid url")
+        val url =
+            baseUrl
+                .newBuilder()
+                .apply {
+                    params.forEach { (key, value) -> addQueryParameter(key, value) }
+                }
+                .build()
+        val request =
+            Request.Builder()
+                .url(url)
+                .header("token", Codec.token(ts))
+                .header("tokenparam", Codec.tokenParam(ts, version))
+                .header("user-agent", ApiConfig.USER_AGENT)
+                .header("accept", "*/*")
+                .build()
+        val call = httpClient.newCall(request)
+        call.timeout().timeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
+        call.execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IOException("HTTP ${response.code}")
             }
-        val url = URL("$base$path${if (query.isEmpty()) "" else "?$query"}")
-        val connection =
-            (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                connectTimeout = timeoutMs
-                readTimeout = timeoutMs
-                setRequestProperty("token", Codec.token(ts))
-                setRequestProperty("tokenparam", Codec.tokenParam(ts, version))
-                setRequestProperty("user-agent", ApiConfig.USER_AGENT)
-                setRequestProperty("accept", "*/*")
-            }
-        try {
-            val status = connection.responseCode
-            if (status !in 200..299) {
-                throw IOException("HTTP $status")
-            }
-            return connection.inputStream.use { it.readText(connection.contentEncoding) }
-        } finally {
-            connection.disconnect()
+            return response.body?.string() ?: throw IOException("empty body")
         }
     }
 
     private fun JSONObject.string(key: String): String = if (isNull(key)) "" else optString(key)
 
-    private fun InputStream.readText(encoding: String?): String {
-        val stream = if (encoding?.contains("gzip", ignoreCase = true) == true) GZIPInputStream(this) else this
-        return stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-    }
-
-    private fun String.hostName(): String = runCatching { URL(this).host }.getOrDefault(this)
-
-    private fun encode(value: String): String = URLEncoder.encode(value, "UTF-8")
+    private fun String.hostName(): String = toHttpUrlOrNull()?.host ?: this
 
     private fun now(): Long = System.currentTimeMillis() / 1000
 

@@ -4,8 +4,6 @@ import android.content.Context
 import android.graphics.BitmapFactory
 import java.io.File
 import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.URL
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -27,6 +25,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
 
 data class PageImage(
     val chapterId: String,
@@ -52,6 +52,7 @@ data class PageSize(
 class PageImageStore(
     context: Context,
     private val userAgent: String,
+    private val httpClient: OkHttpClient,
 ) {
     private val cacheRoot = File(context.cacheDir, "$CACHE_DIR/v$CACHE_VERSION")
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -170,23 +171,24 @@ class PageImageStore(
         target.parentFile?.mkdirs()
         val temp = File.createTempFile("${target.name}.", ".tmp", target.parentFile)
         try {
-            val connection =
-                (URL(image.url).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = CONNECT_TIMEOUT_MS
-                    readTimeout = READ_TIMEOUT_MS
-                    instanceFollowRedirects = true
-                    setRequestProperty("User-Agent", userAgent)
-                    setRequestProperty("Accept", "image/*")
+            val request =
+                Request.Builder()
+                    .url(image.url)
+                    .header("User-Agent", userAgent)
+                    .header("Accept", "image/*")
+                    .build()
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    throw IOException("HTTP ${response.code}")
                 }
-            try {
-                val code = connection.responseCode
-                if (code !in 200..299) {
-                    throw IOException("HTTP $code")
+                val body = response.body ?: throw IOException("empty body")
+                ReaderPerf.log {
+                    "page_http key=${image.cacheKey} code=${response.code} protocol=${response.protocol} connection=${response.header("Connection")}"
                 }
-                if (connection.contentLengthLong > MAX_IMAGE_BYTES) {
+                if (body.contentLength() > MAX_IMAGE_BYTES) {
                     throw IOException("image too large")
                 }
-                connection.inputStream.use { input ->
+                body.byteStream().use { input ->
                     temp.outputStream().buffered().use { output ->
                         val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
                         var total = 0L
@@ -201,8 +203,6 @@ class PageImageStore(
                         }
                     }
                 }
-            } finally {
-                connection.disconnect()
             }
 
             currentCoroutineContext().ensureActive()
@@ -335,8 +335,6 @@ class PageImageStore(
         const val CACHE_DIR = "reader_pages"
         const val CACHE_VERSION = 1
         const val MAX_CONCURRENT_DOWNLOADS = 3
-        const val CONNECT_TIMEOUT_MS = 10_000
-        const val READ_TIMEOUT_MS = 30_000
         const val MAX_IMAGE_BYTES = 64L * 1024 * 1024
         const val MAX_CACHE_BYTES = 1024L * 1024 * 1024
         const val MIN_CACHE_BYTES = 256L * 1024 * 1024

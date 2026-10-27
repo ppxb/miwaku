@@ -23,4 +23,5 @@ dependencies {
     implementation(project(":core:network"))
     implementation(libs.androidx.core.ktx)
     api(libs.kotlinx.coroutines.core)
+    implementation(libs.okhttp)
 }
