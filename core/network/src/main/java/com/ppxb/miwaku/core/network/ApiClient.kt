@@ -34,6 +34,9 @@ class ApiClient(
     @Volatile
     private var cacheHitLogged = false
 
+    @Volatile
+    private var lastImageHostRefreshAt = 0L
+
     private fun cachedSnapshot(): SettingSnapshot? {
         if (!cacheLoaded) {
             synchronized(this) {
@@ -104,6 +107,23 @@ class ApiClient(
 
     fun imageHost(): String? = cachedSnapshot()?.imageHost?.trimEnd('/')
 
+    @Synchronized
+    fun refreshImageHost(): String? {
+        val now = System.currentTimeMillis()
+        if (now - lastImageHostRefreshAt < IMAGE_HOST_REFRESH_THROTTLE_MS) {
+            return snapshot?.imageHost?.trimEnd('/')
+        }
+        lastImageHostRefreshAt = now
+        snapshot = null
+        cacheHitLogged = false
+        settingStore?.clear()
+        val refreshed = fetchSetting().getOrNull()?.imageHost?.trimEnd('/')
+        perf {
+            "image_host_refresh host=${refreshed?.hostName() ?: "failed"}"
+        }
+        return refreshed
+    }
+
     fun userAgent(): String = ApiConfig.USER_AGENT
 
     fun getJson(
@@ -111,29 +131,56 @@ class ApiClient(
         params: Map<String, String> = emptyMap(),
     ): ApiPayload {
         val setting = fetchSetting().getOrThrow()
-        val ts = now()
         return try {
-            ApiPayload(
-                value =
-                    requestJson(
-                        base = setting.baseUrl,
-                        path = path,
-                        params = params + ("t" to "$ts"),
-                        ts = ts,
-                        version = setting.version,
-                        timeoutMs = TIMEOUT_MS,
-                    ),
-                imageHost = setting.imageHost,
-            )
+            requestApi(setting, path, params)
         } catch (e: CancellationException) {
             throw e
         } catch (e: IOException) {
-            if (snapshot === setting) {
-                snapshot = null
-                cacheHitLogged = false
-                settingStore?.clear()
+            clearSetting(setting)
+            val fresh =
+                try {
+                    fetchSetting().getOrThrow()
+                } catch (_: Exception) {
+                    throw e
+                }
+            if (fresh == setting) throw e
+            perf { "api_failover from=${setting.baseUrl.hostName()} to=${fresh.baseUrl.hostName()}" }
+            try {
+                requestApi(fresh, path, params)
+            } catch (retry: CancellationException) {
+                throw retry
+            } catch (retry: IOException) {
+                clearSetting(fresh)
+                throw retry
             }
-            throw e
+        }
+    }
+
+    private fun requestApi(
+        setting: SettingSnapshot,
+        path: String,
+        params: Map<String, String>,
+    ): ApiPayload {
+        val ts = now()
+        return ApiPayload(
+            value =
+                requestJson(
+                    base = setting.baseUrl,
+                    path = path,
+                    params = params + ("t" to "$ts"),
+                    ts = ts,
+                    version = setting.version,
+                    timeoutMs = TIMEOUT_MS,
+                ),
+            imageHost = setting.imageHost,
+        )
+    }
+
+    private fun clearSetting(setting: SettingSnapshot) {
+        if (snapshot === setting) {
+            snapshot = null
+            cacheHitLogged = false
+            settingStore?.clear()
         }
     }
 
@@ -213,6 +260,7 @@ class ApiClient(
     private companion object {
         const val TIMEOUT_MS = 8_000
         const val TOTAL_TIMEOUT_MS = 15_000L
+        const val IMAGE_HOST_REFRESH_THROTTLE_MS = 30_000L
         const val PERF_TAG = "ReaderPerf"
     }
 }

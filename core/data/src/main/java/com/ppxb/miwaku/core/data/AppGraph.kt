@@ -31,7 +31,14 @@ object AppGraph {
     private val apiClient by lazy { ApiClient(httpClient, settingStore) }
     private val manifests by lazy { ChapterManifestCache(appContext) }
     private val detailStore by lazy { ComicDetailCache(appContext) }
-    val pageStore by lazy { PageImageStore(appContext, apiClient.userAgent(), httpClient) }
+    val pageStore by lazy {
+        PageImageStore(
+            context = appContext,
+            userAgent = apiClient.userAgent(),
+            httpClient = httpClient,
+            alternateImageHost = { apiClient.refreshImageHost() },
+        )
+    }
     val comics: ComicRepository by lazy { ComicRepository(apiClient, manifests, detailStore) }
     val history: HistoryStore by lazy { HistoryStore(appContext) }
     val progress: ProgressStore by lazy { ProgressStore(appContext) }

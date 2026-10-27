@@ -25,6 +25,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
@@ -53,6 +54,7 @@ class PageImageStore(
     context: Context,
     private val userAgent: String,
     private val httpClient: OkHttpClient,
+    private val alternateImageHost: () -> String? = { null },
 ) {
     private val cacheRoot = File(context.cacheDir, "$CACHE_DIR/v$CACHE_VERSION")
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -189,38 +191,15 @@ class PageImageStore(
         target.parentFile?.mkdirs()
         val temp = File.createTempFile("${target.name}.", ".tmp", target.parentFile)
         try {
-            val request =
-                Request.Builder()
-                    .url(image.url)
-                    .header("User-Agent", userAgent)
-                    .header("Accept", "image/*")
-                    .build()
-            httpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    throw IOException("HTTP ${response.code}")
-                }
-                val body = response.body ?: throw IOException("empty body")
+            try {
+                fetchTo(image.url, temp)
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                val retryUrl = alternateUrl(image) ?: throw e
                 ReaderPerf.log {
-                    "page_http key=${image.cacheKey} code=${response.code} protocol=${response.protocol} connection=${response.header("Connection")}"
+                    "image_host_retry key=${image.cacheKey} from=${image.url.toHttpUrlOrNull()?.host} to=${retryUrl.toHttpUrlOrNull()?.host}"
                 }
-                if (body.contentLength() > MAX_IMAGE_BYTES) {
-                    throw IOException("image too large")
-                }
-                body.byteStream().use { input ->
-                    temp.outputStream().buffered().use { output ->
-                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                        var total = 0L
-                        while (true) {
-                            val read = input.read(buffer)
-                            if (read < 0) break
-                            total += read
-                            if (total > MAX_IMAGE_BYTES) {
-                                throw IOException("image too large")
-                            }
-                            output.write(buffer, 0, read)
-                        }
-                    }
-                }
+                fetchTo(retryUrl, temp)
             }
 
             currentCoroutineContext().ensureActive()
@@ -250,6 +229,56 @@ class PageImageStore(
                 temp.delete()
             }
         }
+    }
+
+    private fun fetchTo(url: String, temp: File) {
+        val request =
+            Request.Builder()
+                .url(url)
+                .header("User-Agent", userAgent)
+                .header("Accept", "image/*")
+                .build()
+        httpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IOException("HTTP ${response.code}")
+            }
+            val body = response.body ?: throw IOException("empty body")
+            ReaderPerf.log {
+                "page_http code=${response.code} protocol=${response.protocol} connection=${response.header("Connection")}"
+            }
+            if (body.contentLength() > MAX_IMAGE_BYTES) {
+                throw IOException("image too large")
+            }
+            body.byteStream().use { input ->
+                temp.outputStream().buffered().use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    var total = 0L
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        total += read
+                        if (total > MAX_IMAGE_BYTES) {
+                            throw IOException("image too large")
+                        }
+                        output.write(buffer, 0, read)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun alternateUrl(image: PageImage): String? {
+        val alternate = alternateImageHost()?.trimEnd('/')?.takeIf { it.isNotBlank() } ?: return null
+        val current = image.url.toHttpUrlOrNull() ?: return null
+        val replacement = alternate.toHttpUrlOrNull() ?: return null
+        if (current.host == replacement.host && current.port == replacement.port) return null
+        return current
+            .newBuilder()
+            .scheme(replacement.scheme)
+            .host(replacement.host)
+            .port(replacement.port)
+            .build()
+            .toString()
     }
 
     private fun recordSize(image: PageImage, size: PageSize, refresh: Boolean = false) {
