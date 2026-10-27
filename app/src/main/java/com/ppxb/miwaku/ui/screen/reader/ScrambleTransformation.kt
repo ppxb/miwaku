@@ -7,6 +7,7 @@ import android.graphics.Rect
 import androidx.core.graphics.createBitmap
 import coil.size.Size
 import coil.transform.Transformation
+import com.ppxb.miwaku.core.data.image.ReaderPerf
 import kotlin.math.min
 import kotlin.math.roundToInt
 
@@ -20,6 +21,7 @@ internal class ScrambleTransformation(private val count: Int) : Transformation {
     override suspend fun transform(input: Bitmap, size: Size): Bitmap {
         if (count <= 1 || input.width <= 0 || input.height <= 0) return input
 
+        val started = ReaderPerf.mark()
         val width = input.width
         val height = input.height
         val scale = min(1f, MAX_OUTPUT_HEIGHT.toFloat() / height)
@@ -42,6 +44,9 @@ internal class ScrambleTransformation(private val count: Int) : Transformation {
                 Rect(0, destTop.roundToInt(), targetWidth, destBottom.roundToInt()),
                 paint,
             )
+        }
+        ReaderPerf.log {
+            "scramble count=$count in=${width}x$height out=${targetWidth}x$targetHeight ms=${ReaderPerf.mark() - started}"
         }
         return output
     }
