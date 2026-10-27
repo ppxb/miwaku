@@ -88,6 +88,27 @@ fun NavController.navigateToDetail(id: String) {
     navigate(DetailRoute(id)) { launchSingleTop = true }
 }
 
-fun NavController.navigateToReader(albumId: String, chapterId: String, page: Int = 0) {
-    navigate(ReaderRoute(albumId, chapterId, page)) { launchSingleTop = true }
+fun NavController.navigateToReader(
+    albumId: String,
+    chapterId: String,
+    page: Int = 0,
+    replace: Boolean = false,
+) {
+    val readerEntry =
+        currentBackStackEntry?.takeIf { it.destination.hasRoute(ReaderRoute::class) }
+    if (replace) {
+        // A stale auto-advance callback must never push a reader on top of another screen.
+        if (readerEntry == null) return
+        if (readerEntry.savedStateHandle.get<String>("albumId") == albumId &&
+            readerEntry.savedStateHandle.get<String>("chapterId") == chapterId
+        ) {
+            return
+        }
+    }
+    navigate(ReaderRoute(albumId, chapterId, page)) {
+        launchSingleTop = true
+        if (replace && readerEntry != null) {
+            popUpTo(readerEntry.destination.id) { inclusive = true }
+        }
+    }
 }

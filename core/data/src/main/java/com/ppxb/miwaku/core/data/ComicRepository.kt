@@ -1,6 +1,7 @@
 package com.ppxb.miwaku.core.data
 
 import com.ppxb.miwaku.core.data.image.ChapterManifestCache
+import com.ppxb.miwaku.core.data.image.ReaderPerf
 import com.ppxb.miwaku.core.network.ApiClient
 import com.ppxb.miwaku.core.network.ApiPayload
 import com.ppxb.miwaku.model.ChapterContent
@@ -11,6 +12,7 @@ import com.ppxb.miwaku.model.ExploreSection
 import com.ppxb.miwaku.model.ReaderPage
 import com.ppxb.miwaku.model.SearchResult
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -18,6 +20,7 @@ class ComicRepository internal constructor(
     private val api: ApiClient,
     private val manifests: ChapterManifestCache,
 ) {
+    private val detailCache = ConcurrentHashMap<String, CachedDetail>()
     fun latest(page: Int = 0): List<ComicSummary> =
         api.getJson("/latest", mapOf("page" to "$page")).toComicList()
 
@@ -73,6 +76,13 @@ class ComicRepository internal constructor(
             )
 
     fun detail(id: String): ComicDetail {
+        val cached = detailCache[id]
+        if (cached != null && System.currentTimeMillis() - cached.at < DETAIL_TTL_MS) {
+            ReaderPerf.log { "album_cache_hit id=$id" }
+            return cached.detail
+        }
+
+        val started = ReaderPerf.mark()
         val payload = api.getJson("/album", mapOf("id" to id))
         val json = payload.value as? JSONObject ?: throw IOException("unexpected album payload")
         val title = json.string("name").unescapeHtml()
@@ -84,22 +94,34 @@ class ComicRepository internal constructor(
             json.optJSONArray("series").toChapterList().ifEmpty {
                 listOf(ChapterSummary(id = resolvedId, name = SINGLE_VOLUME, sort = 1))
             }
-        return ComicDetail(
-            id = resolvedId,
-            title = title,
-            author = json.string("author").displayAuthor(),
-            description = json.string("description").plainText(),
-            tags = json.optJSONArray("tags").toStringList(),
-            coverUrl = "${payload.imageHost}/media/albums/${resolvedId}_3x4.jpg",
-            chapters = chapters,
-        )
+        val detail =
+            ComicDetail(
+                id = resolvedId,
+                title = title,
+                author = json.string("author").displayAuthor(),
+                description = json.string("description").plainText(),
+                tags = json.optJSONArray("tags").toStringList(),
+                coverUrl = "${payload.imageHost}/media/albums/${resolvedId}_3x4.jpg",
+                chapters = chapters,
+            )
+        if (detailCache.size >= MAX_DETAIL_CACHE) {
+            detailCache.clear()
+        }
+        detailCache[id] = CachedDetail(System.currentTimeMillis(), detail)
+        ReaderPerf.log { "album_loaded id=$id chapters=${chapters.size} ms=${ReaderPerf.mark() - started}" }
+        return detail
     }
 
     fun chapter(albumId: String, chapterId: String): ChapterContent {
+        val started = ReaderPerf.mark()
         manifests.get(chapterId)?.let { cached ->
             val host = api.imageHost() ?: cached.imageHost
             if (host.isNotBlank()) {
-                return cached.toContent(host)
+                val content = cached.toContent(host)
+                ReaderPerf.log {
+                    "manifest_hit chapter=$chapterId pages=${content.pages.size} ms=${ReaderPerf.mark() - started}"
+                }
+                return content
             }
         }
 
@@ -142,6 +164,9 @@ class ComicRepository internal constructor(
             imageHost = payload.imageHost,
             pages = pages,
         )
+        ReaderPerf.log {
+            "manifest_loaded chapter=$chapterId pages=${pages.size} ms=${ReaderPerf.mark() - started}"
+        }
         return content
     }
 
@@ -207,4 +232,14 @@ class ComicRepository internal constructor(
             .unescapeHtml()
             .replace(Regex("\\s+"), " ")
             .trim()
+
+    private data class CachedDetail(
+        val at: Long,
+        val detail: ComicDetail,
+    )
+
+    private companion object {
+        const val DETAIL_TTL_MS = 10 * 60 * 1000L
+        const val MAX_DETAIL_CACHE = 16
+    }
 }

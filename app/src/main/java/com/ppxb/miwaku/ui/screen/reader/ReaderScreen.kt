@@ -11,13 +11,16 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -26,6 +29,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AutoStories
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -40,12 +44,17 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
@@ -63,6 +72,7 @@ import coil.compose.AsyncImage
 import com.ppxb.miwaku.R
 import com.ppxb.miwaku.core.data.image.PageImage
 import com.ppxb.miwaku.core.data.image.PageSize
+import com.ppxb.miwaku.core.data.image.ReaderPerf
 import com.ppxb.miwaku.model.ChapterContent
 import com.ppxb.miwaku.reader.image.PageImageRequests
 import com.ppxb.miwaku.ui.component.EmptyState
@@ -80,6 +90,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 @Composable
 internal fun ReaderScreen(
     onBack: () -> Unit,
+    onNextChapter: (albumId: String, chapterId: String) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: ReaderViewModel = viewModel(),
 ) {
@@ -95,6 +106,38 @@ internal fun ReaderScreen(
     val currentPage by remember { derivedStateOf { listState.firstVisibleItemIndex } }
     val pageSizes by viewModel.pageSizes.collectAsState()
     val failedPages by viewModel.failedPages.collectAsState()
+    val nextChapter by viewModel.nextChapter.collectAsState()
+    val navigating = remember { mutableStateOf(false) }
+    val currentContent = rememberUpdatedState(content)
+    val currentNextChapter = rememberUpdatedState(nextChapter)
+    val currentOnNextChapter = rememberUpdatedState(onNextChapter)
+    val overscrollConnection =
+        remember {
+            object : NestedScrollConnection {
+                override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                    val pastTop =
+                        listState.firstVisibleItemIndex > 0 ||
+                            listState.firstVisibleItemScrollOffset > 0
+                    if (source == NestedScrollSource.UserInput &&
+                        available.y < 0f &&
+                        pastTop &&
+                        listState.layoutInfo.totalItemsCount > 0 &&
+                        !listState.canScrollForward
+                    ) {
+                        val next = (currentNextChapter.value as? NextChapterState.Next)?.chapter
+                        val chapter = currentContent.value
+                        if (next != null && chapter != null && !navigating.value) {
+                            navigating.value = true
+                            ReaderPerf.log {
+                                "chapter_overscroll from=${chapter.chapterId} to=${next.id}"
+                            }
+                            currentOnNextChapter.value(chapter.albumId, next.id)
+                        }
+                    }
+                    return Offset.Zero
+                }
+            }
+        }
     val fallbackRatio =
         remember(pageSizes, content) {
             val chapterId = content?.chapterId
@@ -177,23 +220,28 @@ internal fun ReaderScreen(
                         modifier = Modifier.fillMaxSize(),
                     )
                 } else {
-                    ReaderPages(
-                        content = current.content,
-                        listState = listState,
-                        pageSizes = pageSizes,
-                        failedPages = failedPages,
-                        fallbackRatio = fallbackRatio,
-                        imageWidthPx = imageWidthPx,
-                        onFileOf = viewModel::fileOf,
-                        onRetry = viewModel::retry,
-                        modifier =
-                            Modifier
-                                .fillMaxSize()
-                                .pointerInput(Unit) {
-                                    detectTapGestures { controlsVisible = !controlsVisible }
-                                }
-                                .hazeSource(hazeState),
-                    )
+                    Box(Modifier.fillMaxSize().nestedScroll(overscrollConnection)) {
+                        ReaderPages(
+                            content = current.content,
+                            listState = listState,
+                            pageSizes = pageSizes,
+                            failedPages = failedPages,
+                            fallbackRatio = fallbackRatio,
+                            imageWidthPx = imageWidthPx,
+                            onFileOf = viewModel::fileOf,
+                            onRetry = viewModel::retry,
+                            nextChapter = nextChapter,
+                            onRetryNext = viewModel::retryNextChapter,
+                            onBack = onBack,
+                            modifier =
+                                Modifier
+                                    .fillMaxSize()
+                                    .pointerInput(Unit) {
+                                        detectTapGestures { controlsVisible = !controlsVisible }
+                                    }
+                                    .hazeSource(hazeState),
+                        )
+                    }
                 }
         }
         AnimatedVisibility(
@@ -279,7 +327,11 @@ private fun ReaderBottomBar(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = stringResource(R.string.reader_page_of, page + 1, total),
+            text = stringResource(
+                R.string.reader_page_of,
+                if (total > 0) page.coerceIn(0, total - 1) + 1 else 1,
+                total,
+            ),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -296,6 +348,9 @@ private fun ReaderPages(
     imageWidthPx: Int,
     onFileOf: (PageImage) -> File?,
     onRetry: (PageImage) -> Unit,
+    nextChapter: NextChapterState,
+    onRetryNext: () -> Unit,
+    onBack: () -> Unit,
     modifier: Modifier,
 ) {
     LazyColumn(
@@ -329,6 +384,13 @@ private fun ReaderPages(
                 retry = onRetry,
             )
         }
+        item(key = "reader-footer", contentType = "footer") {
+            ReaderFooter(
+                state = nextChapter,
+                onRetry = onRetryNext,
+                onBack = onBack,
+            )
+        }
     }
 }
 
@@ -347,6 +409,7 @@ private fun ReaderPageImage(
     var attempt by remember { mutableIntStateOf(0) }
     var decodeFailed by remember { mutableStateOf(false) }
     val file = remember(image.cacheKey, knownSize) { fileOf(image) }
+    val pageStarted = remember(image.cacheKey, attempt, file) { ReaderPerf.mark() }
     val request =
         remember(file, image, imageWidthPx, attempt) {
             file?.let { PageImageRequests.build(context, image, it, imageWidthPx, attempt) }
@@ -372,8 +435,16 @@ private fun ReaderPageImage(
                 contentDescription = stringResource(R.string.reader_page, index + 1),
                 contentScale = ContentScale.FillWidth,
                 modifier = Modifier.fillMaxSize(),
-                onSuccess = { decodeFailed = false },
-                onError = { decodeFailed = true },
+                onSuccess = {
+                    decodeFailed = false
+                    ReaderPerf.log {
+                        "page_ready index=$index ms=${ReaderPerf.mark() - pageStarted}"
+                    }
+                },
+                onError = {
+                    decodeFailed = true
+                    ReaderPerf.log { "page_decode_failed index=$index" }
+                },
             )
         }
         if (failed || decodeFailed) {
@@ -395,6 +466,72 @@ private fun ReaderPageImage(
                 ) {
                     Text(stringResource(R.string.action_retry))
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReaderFooter(
+    state: NextChapterState,
+    onRetry: () -> Unit,
+    onBack: () -> Unit,
+) {
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(vertical = 48.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        when (state) {
+            NextChapterState.Unknown -> {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(24.dp),
+                    strokeWidth = 2.dp,
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = stringResource(R.string.reader_next_unknown),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onRetry) {
+                        Text(stringResource(R.string.action_retry))
+                    }
+                    TextButton(onClick = onBack) {
+                        Text(stringResource(R.string.reader_back_to_detail))
+                    }
+                }
+            }
+
+            NextChapterState.None -> {
+                HorizontalDivider(
+                    modifier = Modifier.width(72.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                )
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    text = stringResource(R.string.reader_end_of_comic),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            is NextChapterState.Next -> {
+                Text(
+                    text = stringResource(R.string.reader_scroll_to_next),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = state.chapter.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
             }
         }
     }

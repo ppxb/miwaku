@@ -2,6 +2,7 @@ package com.ppxb.miwaku.ui.screen.reader
 
 import com.ppxb.miwaku.core.data.image.PageImage
 import com.ppxb.miwaku.core.data.image.PageImageStore
+import com.ppxb.miwaku.core.data.image.ReaderPerf
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -34,17 +35,22 @@ internal class ReaderPrefetcher(
         job?.cancel()
         job =
             scope.launch {
-                for (page in window(target)) {
+                val started = ReaderPerf.mark()
+                val window = window(target)
+                ReaderPerf.log { "prefetch_start index=$target count=${window.size}" }
+                for (page in window) {
                     if (!isActive) return@launch
                     try {
                         store.prepare(page)
                         onPageReady(page)
                     } catch (e: CancellationException) {
                         throw e
-                    } catch (_: Exception) {
+                    } catch (e: Exception) {
+                        ReaderPerf.log { "prefetch_page_failed key=${page.cacheKey} msg=${e.message}" }
                         onPageFailed(page)
                     }
                 }
+                ReaderPerf.log { "prefetch_done index=$target ms=${ReaderPerf.mark() - started}" }
             }
     }
 

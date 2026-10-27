@@ -10,6 +10,7 @@ import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
@@ -79,6 +80,7 @@ class PageImageStore(
                     recordSize(image, size)
                     file.setLastModified(System.currentTimeMillis())
                     if (file.isFile && file.length() > 0) {
+                        ReaderPerf.log { "page_cache_hit key=${image.cacheKey}" }
                         return@withContext file
                     }
                 } else {
@@ -86,34 +88,42 @@ class PageImageStore(
                 }
             }
 
-            val key = image.cacheKey
-            var deferred = inFlight[key]
-            if (deferred == null) {
-                val candidate =
-                    scope.async(start = CoroutineStart.LAZY) {
-                        downloadSlots.withPermit { download(image) }
+            try {
+                val key = image.cacheKey
+                var deferred = inFlight[key]
+                if (deferred == null) {
+                    val candidate =
+                        scope.async(start = CoroutineStart.LAZY) {
+                            downloadSlots.withPermit { download(image) }
+                        }
+                    val existing = inFlight.putIfAbsent(key, candidate)
+                    if (existing == null) {
+                        deferred = candidate
+                        candidate.invokeOnCompletion { inFlight.remove(key, candidate) }
+                        candidate.start()
+                    } else {
+                        candidate.cancel()
+                        deferred = existing
                     }
-                val existing = inFlight.putIfAbsent(key, candidate)
-                if (existing == null) {
-                    deferred = candidate
-                    candidate.invokeOnCompletion { inFlight.remove(key, candidate) }
-                    candidate.start()
-                } else {
-                    candidate.cancel()
-                    deferred = existing
                 }
-            }
-            deferred.await().let { file ->
-                if (file.isFile && file.length() > 0) {
-                    file
-                } else {
-                    throw IOException("page file disappeared")
+                deferred.await().let { file ->
+                    if (file.isFile && file.length() > 0) {
+                        file
+                    } else {
+                        throw IOException("page file disappeared")
+                    }
                 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                ReaderPerf.log { "page_failed key=${image.cacheKey} msg=${e.message}" }
+                throw e
             }
         }
 
     suspend fun loadCachedSizes(images: List<PageImage>) =
         withContext(Dispatchers.IO) {
+            val started = ReaderPerf.mark()
             val found = HashMap<String, PageSize>()
             for (image in images) {
                 currentCoroutineContext().ensureActive()
@@ -138,10 +148,14 @@ class PageImageStore(
                     }
                 }
             }
+            ReaderPerf.log {
+                "sizes_loaded count=${found.size} ms=${ReaderPerf.mark() - started}"
+            }
         }
 
     fun invalidate(image: PageImage) {
         val key = image.cacheKey
+        ReaderPerf.log { "page_invalidate key=$key" }
         inFlight.remove(key)?.cancel()
         fileFor(image).delete()
         synchronized(sizeLock) {
@@ -151,6 +165,7 @@ class PageImageStore(
     }
 
     private suspend fun download(image: PageImage): File {
+        val started = ReaderPerf.mark()
         val target = fileFor(image)
         target.parentFile?.mkdirs()
         val temp = File.createTempFile("${target.name}.", ".tmp", target.parentFile)
@@ -199,11 +214,17 @@ class PageImageStore(
                 if (target.isFile && readSize(target) != null) {
                     temp.delete()
                     recordSize(image, size, refresh = true)
+                    ReaderPerf.log {
+                        "page_downloaded key=${image.cacheKey} ms=${ReaderPerf.mark() - started} bytes=${target.length()}"
+                    }
                     return target
                 }
                 throw IOException("cannot store image")
             }
             recordSize(image, size, refresh = true)
+            ReaderPerf.log {
+                "page_downloaded key=${image.cacheKey} ms=${ReaderPerf.mark() - started} bytes=${target.length()}"
+            }
             maybeTrim()
             return target
         } finally {
