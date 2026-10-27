@@ -70,6 +70,12 @@
 
     <!-- Settings -->
     <string name="settings_title">设置</string>
+    <string name="settings_section_reader">阅读</string>
+    <string name="settings_prefetch_pages">预取页数</string>
+    <string name="settings_prefetch_pages_summary">向前 %1$d 页（另保留后方 2 页）</string>
+    <string name="settings_prefetch_pages_option">%1$d 页</string>
+    <string name="settings_wifi_only_prefetch">仅 Wi-Fi 预取</string>
+    <string name="settings_wifi_only_prefetch_description">移动网络只加载当前可见页，不预取后续页</string>
     <string name="settings_section_style">样式</string>
     <string name="settings_theme">主题</string>
     <string name="settings_theme_system">跟随系统</string>
@@ -78,6 +84,12 @@
     <string name="settings_liquid_glass">Liquid Glass (BETA)</string>
     <string name="settings_liquid_glass_description">开启 IOS 的 liquid glass 效果（需要 Android 13+）</string>
     <string name="settings_section_debug">调试</string>
+    <string name="settings_section_storage">存储</string>
+    <string name="settings_reader_cache">阅读缓存</string>
+    <string name="settings_reader_cache_loading">正在计算…</string>
+    <string name="settings_reader_cache_summary">%1$s · 点击清理</string>
+    <string name="settings_clear_cache_title">清理阅读缓存？</string>
+    <string name="settings_clear_cache_message">将删除已缓存的页面和章节索引，之后需要重新加载。</string>
     <string name="settings_placeholder_covers">封面占位图</string>
     <string name="settings_placeholder_covers_description">用灰色图块替换封面和预览图，阅读器不受影响</string>
 </resources>

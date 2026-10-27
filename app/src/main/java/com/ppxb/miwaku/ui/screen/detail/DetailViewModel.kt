@@ -93,6 +93,10 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
                     } else {
                         0
                     }
+                if (!AppGraph.isPrefetchAllowed()) {
+                    ReaderPerf.log { "detail_prefetch_skipped_metered chapter=${target.id}" }
+                    return@launch
+                }
                 val started = ReaderPerf.mark()
                 ReaderPerf.log {
                     "detail_prefetch_start chapter=${target.id} page=$startPage"

@@ -24,6 +24,12 @@ class SettingsStore(context: Context) {
     private val _placeholderCovers = MutableStateFlow(prefs.getBoolean(KEY_PLACEHOLDER_COVERS, false))
     val placeholderCovers: StateFlow<Boolean> = _placeholderCovers.asStateFlow()
 
+    private val _readerPrefetchAhead = MutableStateFlow(readPrefetchAhead())
+    val readerPrefetchAhead: StateFlow<Int> = _readerPrefetchAhead.asStateFlow()
+
+    private val _wifiOnlyPrefetch = MutableStateFlow(prefs.getBoolean(KEY_WIFI_ONLY_PREFETCH, false))
+    val wifiOnlyPrefetch: StateFlow<Boolean> = _wifiOnlyPrefetch.asStateFlow()
+
     fun setThemeMode(mode: ThemeMode) {
         _themeMode.value = mode
         prefs.edit { putString(KEY_THEME_MODE, mode.name) }
@@ -39,6 +45,21 @@ class SettingsStore(context: Context) {
         prefs.edit { putBoolean(KEY_PLACEHOLDER_COVERS, enabled) }
     }
 
+    fun setReaderPrefetchAhead(pages: Int) {
+        val safe = pages.coerceIn(MIN_PREFETCH_AHEAD, MAX_PREFETCH_AHEAD)
+        _readerPrefetchAhead.value = safe
+        prefs.edit { putInt(KEY_PREFETCH_AHEAD, safe) }
+    }
+
+    fun setWifiOnlyPrefetch(enabled: Boolean) {
+        _wifiOnlyPrefetch.value = enabled
+        prefs.edit { putBoolean(KEY_WIFI_ONLY_PREFETCH, enabled) }
+    }
+
+    private fun readPrefetchAhead(): Int =
+        prefs.getInt(KEY_PREFETCH_AHEAD, DEFAULT_PREFETCH_AHEAD)
+            .coerceIn(MIN_PREFETCH_AHEAD, MAX_PREFETCH_AHEAD)
+
     private fun readThemeMode(): ThemeMode {
         val stored = prefs.getString(KEY_THEME_MODE, null) ?: return ThemeMode.System
         return ThemeMode.entries.firstOrNull { it.name == stored } ?: ThemeMode.System
@@ -48,5 +69,10 @@ class SettingsStore(context: Context) {
         const val KEY_THEME_MODE = "theme_mode"
         const val KEY_LIQUID_GLASS = "liquid_glass"
         const val KEY_PLACEHOLDER_COVERS = "placeholder_covers"
+        const val KEY_PREFETCH_AHEAD = "reader_prefetch_ahead"
+        const val KEY_WIFI_ONLY_PREFETCH = "wifi_only_prefetch"
+        const val DEFAULT_PREFETCH_AHEAD = 6
+        const val MIN_PREFETCH_AHEAD = 3
+        const val MAX_PREFETCH_AHEAD = 10
     }
 }

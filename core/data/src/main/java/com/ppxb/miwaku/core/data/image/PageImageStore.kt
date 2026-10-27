@@ -165,6 +165,24 @@ class PageImageStore(
         }
     }
 
+    fun cacheSizeBytes(): Long =
+        runCatching {
+            cacheRoot.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        }.getOrDefault(0L)
+
+    fun clearCache() {
+        inFlight.values.forEach { it.cancel() }
+        inFlight.clear()
+        runCatching {
+            cacheRoot.walkTopDown().filter { it.isFile }.forEach { it.delete() }
+        }
+        synchronized(sizeLock) {
+            _sizes.value = emptyMap()
+            sizeKeys.clear()
+        }
+        ReaderPerf.log { "reader_cache_cleared" }
+    }
+
     private suspend fun download(image: PageImage): File {
         val started = ReaderPerf.mark()
         val target = fileFor(image)

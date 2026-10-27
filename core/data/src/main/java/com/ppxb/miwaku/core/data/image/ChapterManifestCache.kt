@@ -40,6 +40,17 @@ data class CachedChapter(
 class ChapterManifestCache(context: Context) {
     private val dir = File(context.cacheDir, "$CACHE_DIR/v$CACHE_VERSION")
 
+    fun sizeBytes(): Long =
+        runCatching {
+            dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        }.getOrDefault(0L)
+
+    fun clear() {
+        runCatching {
+            dir.walkTopDown().filter { it.isFile }.forEach { it.delete() }
+        }
+    }
+
     fun get(chapterId: String): CachedChapter? {
         val file = fileFor(chapterId)
         if (!file.isFile) return null

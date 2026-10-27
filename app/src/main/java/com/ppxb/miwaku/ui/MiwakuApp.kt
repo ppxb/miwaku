@@ -50,6 +50,10 @@ fun MiwakuApp(
     onLiquidGlassChange: (Boolean) -> Unit,
     placeholderCovers: Boolean,
     onPlaceholderCoversChange: (Boolean) -> Unit,
+    prefetchAhead: Int,
+    onPrefetchAheadChange: (Int) -> Unit,
+    wifiOnlyPrefetch: Boolean,
+    onWifiOnlyPrefetchChange: (Boolean) -> Unit,
 ) {
     val navController = rememberNavController()
     val currentDestination by navController.currentBackStackEntryAsState()
@@ -133,6 +137,10 @@ fun MiwakuApp(
                     onLiquidGlassChange = onLiquidGlassChange,
                     placeholderCovers = placeholderCovers,
                     onPlaceholderCoversChange = onPlaceholderCoversChange,
+                    prefetchAhead = prefetchAhead,
+                    onPrefetchAheadChange = onPrefetchAheadChange,
+                    wifiOnlyPrefetch = wifiOnlyPrefetch,
+                    onWifiOnlyPrefetchChange = onWifiOnlyPrefetchChange,
                     onBack = { navController.popBackStack() },
                 )
             }

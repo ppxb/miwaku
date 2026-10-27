@@ -21,6 +21,9 @@ internal class ReaderPrefetcher(
     private val pages: List<PageImage>,
     private val onPageReady: (PageImage) -> Unit = {},
     private val onPageFailed: (PageImage) -> Unit = {},
+    private val ahead: Int = 6,
+    private val behind: Int = 2,
+    private val prefetchAllowed: () -> Boolean = { true },
 ) {
     private var job: Job? = null
     private var currentIndex = -1
@@ -44,6 +47,11 @@ internal class ReaderPrefetcher(
                 val visible = window.firstOrNull() ?: return@launch
                 download(visible)
                 ReaderPerf.log { "prefetch_visible_done index=$target ms=${ReaderPerf.mark() - started}" }
+
+                if (!prefetchAllowed()) {
+                    ReaderPerf.log { "prefetch_skipped_metered index=$target" }
+                    return@launch
+                }
 
                 for (batch in window.drop(1).chunked(PREFETCH_CONCURRENCY)) {
                     if (!isActive) return@launch
@@ -76,18 +84,16 @@ internal class ReaderPrefetcher(
     private fun window(index: Int): List<PageImage> {
         val window = LinkedHashSet<PageImage>()
         window += pages[index]
-        for (offset in 1..AHEAD) {
+        for (offset in 1..ahead) {
             pages.getOrNull(index + offset)?.let { window += it }
         }
-        for (offset in 1..BEHIND) {
+        for (offset in 1..behind) {
             pages.getOrNull(index - offset)?.let { window += it }
         }
         return window.toList()
     }
 
     private companion object {
-        const val AHEAD = 6
-        const val BEHIND = 2
         const val PREFETCH_CONCURRENCY = 3
     }
 }

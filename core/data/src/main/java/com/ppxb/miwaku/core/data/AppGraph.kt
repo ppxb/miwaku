@@ -1,8 +1,11 @@
 package com.ppxb.miwaku.core.data
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import com.ppxb.miwaku.core.data.image.ChapterManifestCache
 import com.ppxb.miwaku.core.data.image.PageImageStore
+import com.ppxb.miwaku.core.data.settings.SettingsStore
 import com.ppxb.miwaku.core.network.ApiClient
 import com.ppxb.miwaku.core.network.SharedSettingSnapshotStore
 import java.util.concurrent.TimeUnit
@@ -14,6 +17,8 @@ object AppGraph {
     fun init(context: Context) {
         appContext = context.applicationContext
     }
+
+    val settings: SettingsStore by lazy { SettingsStore(appContext) }
 
     private val httpClient by lazy {
         OkHttpClient.Builder()
@@ -29,4 +34,21 @@ object AppGraph {
     val comics: ComicRepository by lazy { ComicRepository(apiClient, manifests) }
     val history: HistoryStore by lazy { HistoryStore(appContext) }
     val progress: ProgressStore by lazy { ProgressStore(appContext) }
+
+    fun isPrefetchAllowed(): Boolean =
+        !settings.wifiOnlyPrefetch.value || isUnmetered()
+
+    fun readerCacheSizeBytes(): Long = pageStore.cacheSizeBytes() + manifests.sizeBytes()
+
+    fun clearReaderCache() {
+        pageStore.clearCache()
+        manifests.clear()
+    }
+
+    private fun isUnmetered(): Boolean =
+        runCatching {
+            val manager = appContext.getSystemService(ConnectivityManager::class.java) ?: return false
+            val capabilities = manager.getNetworkCapabilities(manager.activeNetwork) ?: return false
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+        }.getOrDefault(false)
 }

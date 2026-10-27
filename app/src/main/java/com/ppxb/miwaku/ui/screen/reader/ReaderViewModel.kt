@@ -169,6 +169,8 @@ internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
                 pages = images,
                 onPageReady = { image -> _failedPages.update { it - image.cacheKey } },
                 onPageFailed = { image -> _failedPages.update { it + image.cacheKey } },
+                ahead = AppGraph.settings.readerPrefetchAhead.value,
+                prefetchAllowed = { AppGraph.isPrefetchAllowed() },
             ).also { it.start(initialPage) }
         viewModelScope.launch(Dispatchers.IO) { AppGraph.pageStore.loadCachedSizes(images) }
     }
@@ -218,6 +220,10 @@ internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
         nextManifestJob?.cancel()
         nextManifestJob =
             viewModelScope.launch(Dispatchers.IO) {
+                if (!AppGraph.isPrefetchAllowed()) {
+                    ReaderPerf.log { "next_manifest_skipped_metered next=${next.id}" }
+                    return@launch
+                }
                 val started = ReaderPerf.mark()
                 ReaderPerf.log { "next_manifest_start next=${next.id}" }
                 try {
@@ -238,6 +244,7 @@ internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
         val next = (_nextChapter.value as? NextChapterState.Next)?.chapter ?: return
         if (content.pages.isEmpty()) return
         if (page < content.pages.size - NEXT_PREFETCH_THRESHOLD) return
+        if (!AppGraph.isPrefetchAllowed()) return
         if (!nextPrefetchStarted.compareAndSet(false, true)) return
         nextPrefetchJob =
             viewModelScope.launch(Dispatchers.IO) {
