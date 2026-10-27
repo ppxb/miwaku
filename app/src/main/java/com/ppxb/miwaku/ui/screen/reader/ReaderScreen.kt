@@ -38,13 +38,11 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
@@ -56,19 +54,17 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
-import coil.request.ImageRequest
-import coil.size.Dimension
-import coil.size.Size
 import com.ppxb.miwaku.R
+import com.ppxb.miwaku.core.data.image.PageImage
+import com.ppxb.miwaku.core.data.image.PageSize
 import com.ppxb.miwaku.model.ChapterContent
-import com.ppxb.miwaku.model.ReaderPage
+import com.ppxb.miwaku.reader.image.PageImageRequests
 import com.ppxb.miwaku.ui.component.EmptyState
 import com.ppxb.miwaku.ui.component.ErrorState
 import com.ppxb.miwaku.ui.component.topBarBlurStyle
@@ -77,6 +73,7 @@ import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.blur.hazeBlur
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
+import java.io.File
 import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.distinctUntilChanged
 
@@ -96,8 +93,21 @@ internal fun ReaderScreen(
     var controlsVisible by rememberSaveable { mutableStateOf(false) }
     var initialScrollDone by rememberSaveable { mutableStateOf(false) }
     val currentPage by remember { derivedStateOf { listState.firstVisibleItemIndex } }
-    val pageSizes = remember { mutableStateMapOf<String, IntSize>() }
-    val fallbackRatio = remember(pageSizes.size) { medianPageRatio(pageSizes.values) }
+    val pageSizes by viewModel.pageSizes.collectAsState()
+    val failedPages by viewModel.failedPages.collectAsState()
+    val fallbackRatio =
+        remember(pageSizes, content) {
+            val chapterId = content?.chapterId
+            val sizes =
+                if (chapterId == null) {
+                    emptyList()
+                } else {
+                    content.pages.mapIndexedNotNull { index, page ->
+                        pageSizes["$chapterId/${page.fileName.ifBlank { "page-$index" }}"]
+                    }
+                }
+            medianPageRatio(sizes)
+        }
     val density = LocalDensity.current
     val screenWidthDp = LocalConfiguration.current.screenWidthDp
     val imageWidthPx =
@@ -171,8 +181,11 @@ internal fun ReaderScreen(
                         content = current.content,
                         listState = listState,
                         pageSizes = pageSizes,
+                        failedPages = failedPages,
                         fallbackRatio = fallbackRatio,
                         imageWidthPx = imageWidthPx,
+                        onFileOf = viewModel::fileOf,
+                        onRetry = viewModel::retry,
                         modifier =
                             Modifier
                                 .fillMaxSize()
@@ -277,9 +290,12 @@ private fun ReaderBottomBar(
 private fun ReaderPages(
     content: ChapterContent,
     listState: LazyListState,
-    pageSizes: SnapshotStateMap<String, IntSize>,
+    pageSizes: Map<String, PageSize>,
+    failedPages: Set<String>,
     fallbackRatio: Float,
     imageWidthPx: Int,
+    onFileOf: (PageImage) -> File?,
+    onRetry: (PageImage) -> Unit,
     modifier: Modifier,
 ) {
     LazyColumn(
@@ -289,16 +305,28 @@ private fun ReaderPages(
     ) {
         itemsIndexed(
             items = content.pages,
-            key = { _, page -> page.url },
+            key = { index, page -> "$index:${page.fileName}" },
             contentType = { _, _ -> "page" },
         ) { index, page ->
+            val image =
+                remember(content.chapterId, page.url, page.fileName, page.splitCount, index) {
+                    PageImage(
+                        chapterId = content.chapterId,
+                        fileName = page.fileName.ifBlank { "page-$index" },
+                        index = index,
+                        splitCount = page.splitCount,
+                        url = page.url,
+                    )
+                }
             ReaderPageImage(
-                page = page,
+                image = image,
                 index = index,
-                knownSize = pageSizes[page.url],
+                knownSize = pageSizes[image.cacheKey],
+                failed = image.cacheKey in failedPages,
                 fallbackRatio = fallbackRatio,
                 imageWidthPx = imageWidthPx,
-                onSize = { size -> pageSizes[page.url] = size },
+                fileOf = onFileOf,
+                retry = onRetry,
             )
         }
     }
@@ -306,34 +334,22 @@ private fun ReaderPages(
 
 @Composable
 private fun ReaderPageImage(
-    page: ReaderPage,
+    image: PageImage,
     index: Int,
-    knownSize: IntSize?,
+    knownSize: PageSize?,
+    failed: Boolean,
     fallbackRatio: Float,
     imageWidthPx: Int,
-    onSize: (IntSize) -> Unit,
+    fileOf: (PageImage) -> File?,
+    retry: (PageImage) -> Unit,
 ) {
     val context = LocalContext.current
     var attempt by remember { mutableIntStateOf(0) }
-    var failed by remember { mutableStateOf(false) }
+    var decodeFailed by remember { mutableStateOf(false) }
+    val file = remember(image.cacheKey, knownSize) { fileOf(image) }
     val request =
-        remember(page.url, page.splitCount, imageWidthPx, attempt) {
-            val url = if (attempt == 0) page.url else page.url.withRetry(attempt)
-            ImageRequest.Builder(context)
-                .data(url)
-                .apply {
-                    if (page.splitCount > 0) {
-                        // Scrambled pages need their exact original pixel rows, so they cannot be
-                        // downsampled before the rows are reordered. The transformation itself
-                        // caps the output height.
-                        size(Size.ORIGINAL)
-                        transformations(ScrambleTransformation(page.splitCount))
-                    } else {
-                        size(Dimension.Pixels(imageWidthPx), Dimension.Undefined)
-                    }
-                }
-                .crossfade(false)
-                .build()
+        remember(file, image, imageWidthPx, attempt) {
+            file?.let { PageImageRequests.build(context, image, it, imageWidthPx, attempt) }
         }
     val ratio =
         if (knownSize != null && knownSize.width > 0 && knownSize.height > 0) {
@@ -350,23 +366,17 @@ private fun ReaderPageImage(
                 .clipToBounds()
                 .background(MaterialTheme.colorScheme.surfaceContainer),
     ) {
-        AsyncImage(
-            model = request,
-            contentDescription = stringResource(R.string.reader_page, index + 1),
-            contentScale = ContentScale.FillWidth,
-            modifier = Modifier.fillMaxSize(),
-            onSuccess = { success ->
-                failed = false
-                val drawable = success.result.drawable
-                val width = drawable.intrinsicWidth
-                val height = drawable.intrinsicHeight
-                if (width > 0 && height > 0) {
-                    onSize(IntSize(width, height))
-                }
-            },
-            onError = { failed = true },
-        )
-        if (failed) {
+        if (request != null) {
+            AsyncImage(
+                model = request,
+                contentDescription = stringResource(R.string.reader_page, index + 1),
+                contentScale = ContentScale.FillWidth,
+                modifier = Modifier.fillMaxSize(),
+                onSuccess = { decodeFailed = false },
+                onError = { decodeFailed = true },
+            )
+        }
+        if (failed || decodeFailed) {
             Column(
                 modifier = Modifier.align(Alignment.Center),
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -378,7 +388,8 @@ private fun ReaderPageImage(
                 )
                 TextButton(
                     onClick = {
-                        failed = false
+                        retry(image)
+                        decodeFailed = false
                         attempt += 1
                     },
                 ) {
@@ -389,7 +400,7 @@ private fun ReaderPageImage(
     }
 }
 
-private fun medianPageRatio(sizes: Collection<IntSize>): Float {
+private fun medianPageRatio(sizes: Collection<PageSize>): Float {
     if (sizes.size < MIN_RATIO_SAMPLES) return DEFAULT_PAGE_RATIO
     val ratios =
         sizes
@@ -402,11 +413,6 @@ private fun medianPageRatio(sizes: Collection<IntSize>): Float {
             }.sorted()
     if (ratios.size < MIN_RATIO_SAMPLES) return DEFAULT_PAGE_RATIO
     return ratios[ratios.size / 2]
-}
-
-private fun String.withRetry(attempt: Int): String {
-    val separator = if ('?' in this) '&' else '?'
-    return "$this${separator}retry=$attempt"
 }
 
 private const val DEFAULT_PAGE_RATIO = 3f / 4f

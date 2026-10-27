@@ -42,8 +42,8 @@ class MiwakuApplication : Application(), ImageLoaderFactory {
     }
 
     private companion object {
-        const val MEMORY_CACHE_PERCENT = 0.15
-        const val MAX_MEMORY_CACHE_BYTES = 48L * 1024 * 1024
-        const val DISK_CACHE_BYTES = 100L * 1024 * 1024
+        const val MEMORY_CACHE_PERCENT = 0.25
+        const val MAX_MEMORY_CACHE_BYTES = 128L * 1024 * 1024
+        const val DISK_CACHE_BYTES = 256L * 1024 * 1024
     }
 }

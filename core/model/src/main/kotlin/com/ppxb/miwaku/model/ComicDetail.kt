@@ -26,4 +26,5 @@ data class ChapterContent(
 data class ReaderPage(
     val url: String,
     val splitCount: Int,
+    val fileName: String,
 )

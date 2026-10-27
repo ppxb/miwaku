@@ -65,6 +65,10 @@ class ApiClient {
         }
     }
 
+    fun imageHost(): String? = snapshot?.imageHost?.trimEnd('/')
+
+    fun userAgent(): String = ApiConfig.USER_AGENT
+
     fun getJson(
         path: String,
         params: Map<String, String> = emptyMap(),

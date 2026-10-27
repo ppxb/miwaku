@@ -1,5 +1,6 @@
 package com.ppxb.miwaku.core.data
 
+import com.ppxb.miwaku.core.data.image.ChapterManifestCache
 import com.ppxb.miwaku.core.network.ApiClient
 import com.ppxb.miwaku.core.network.ApiPayload
 import com.ppxb.miwaku.model.ChapterContent
@@ -15,6 +16,7 @@ import org.json.JSONObject
 
 class ComicRepository internal constructor(
     private val api: ApiClient,
+    private val manifests: ChapterManifestCache,
 ) {
     fun latest(page: Int = 0): List<ComicSummary> =
         api.getJson("/latest", mapOf("page" to "$page")).toComicList()
@@ -94,6 +96,13 @@ class ComicRepository internal constructor(
     }
 
     fun chapter(albumId: String, chapterId: String): ChapterContent {
+        manifests.get(chapterId)?.let { cached ->
+            val host = api.imageHost() ?: cached.imageHost
+            if (host.isNotBlank()) {
+                return cached.toContent(host)
+            }
+        }
+
         val payload = api.getJson("/chapter", mapOf("id" to chapterId))
         val json = payload.value as? JSONObject ?: throw IOException("unexpected chapter payload")
         val images = json.optJSONArray("images").toStringList()
@@ -116,14 +125,24 @@ class ComicRepository internal constructor(
                 ReaderPage(
                     url = "$host/media/photos/$chapterId/$filename",
                     splitCount = splitCount,
+                    fileName = filename,
                 )
             }
-        return ChapterContent(
-            albumId = seriesId,
+        val content =
+            ChapterContent(
+                albumId = seriesId,
+                chapterId = chapterId,
+                title = json.string("name").unescapeHtml(),
+                pages = pages,
+            )
+        manifests.put(
             chapterId = chapterId,
-            title = json.string("name").unescapeHtml(),
+            seriesId = seriesId,
+            title = content.title,
+            imageHost = payload.imageHost,
             pages = pages,
         )
+        return content
     }
 
     private fun ApiPayload.toComicList(): List<ComicSummary> = value.toComicList(imageHost)
