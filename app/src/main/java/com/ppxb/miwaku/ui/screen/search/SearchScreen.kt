@@ -2,6 +2,7 @@ package com.ppxb.miwaku.ui.screen.search
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,7 +19,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -45,6 +45,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ppxb.miwaku.R
 import com.ppxb.miwaku.model.ComicSummary
 import com.ppxb.miwaku.ui.component.ComicGrid
+import com.ppxb.miwaku.ui.component.ComicGridSkeleton
 import com.ppxb.miwaku.ui.component.EmptyState
 import com.ppxb.miwaku.ui.component.ErrorState
 
@@ -96,12 +97,10 @@ internal fun SearchScreen(
                 )
 
             SearchUiState.Loading ->
-                Box(
+                ComicGridSkeleton(
                     modifier = Modifier.fillMaxWidth().weight(1f),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator()
-                }
+                    contentPadding = PaddingValues(top = 16.dp),
+                )
 
             is SearchUiState.Failed ->
                 ErrorState(

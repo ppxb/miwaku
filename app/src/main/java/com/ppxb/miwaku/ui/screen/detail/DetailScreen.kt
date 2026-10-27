@@ -1,11 +1,12 @@
 package com.ppxb.miwaku.ui.screen.detail
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
@@ -36,6 +37,7 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -50,11 +52,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
@@ -100,10 +100,6 @@ internal fun DetailScreen(
     val showBackToTop by remember {
         derivedStateOf { listState.firstVisibleItemIndex > 0 }
     }
-    val barFraction by animateFloatAsState(
-        targetValue = if (showBar) 1f else 0f,
-        label = "detailBar",
-    )
     val title = (state as? DetailUiState.Content)?.detail?.title.orEmpty()
 
     Box(modifier.fillMaxSize()) {
@@ -128,18 +124,24 @@ internal fun DetailScreen(
                     detail = current.detail,
                     resume = resume,
                     onOpenChapter = onOpenChapter,
+                    onBack = onBack,
                     placeholderCovers = placeholderCovers,
                     listState = listState,
                     modifier = Modifier.fillMaxSize().hazeSource(hazeState),
                 )
         }
-        DetailTopBar(
-            title = title,
-            fraction = barFraction,
-            hazeState = hazeState,
-            onBack = onBack,
+        AnimatedVisibility(
+            visible = showBar,
             modifier = Modifier.align(Alignment.TopCenter),
-        )
+            enter = fadeIn() + slideInVertically(),
+            exit = fadeOut() + slideOutVertically(),
+        ) {
+            PinnedDetailTopBar(
+                title = title,
+                hazeState = hazeState,
+                onBack = onBack,
+            )
+        }
         AnimatedVisibility(
             visible = showBackToTop,
             modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp).navigationBarsPadding(),
@@ -163,24 +165,39 @@ internal fun DetailScreen(
 }
 
 @Composable
-private fun DetailTopBar(
-    title: String,
-    fraction: Float,
-    hazeState: HazeState,
+private fun DetailBackButton(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(
+    Box(
         modifier =
             modifier
+                .size(40.dp)
+                .clip(CircleShape)
+                .background(Color.Black.copy(alpha = 0.35f))
+                .clickable(onClick = onBack),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+            contentDescription = stringResource(R.string.action_back),
+            tint = Color.White,
+            modifier = Modifier.size(22.dp),
+        )
+    }
+}
+
+@Composable
+private fun PinnedDetailTopBar(
+    title: String,
+    hazeState: HazeState,
+    onBack: () -> Unit,
+) {
+    Column(
+        modifier =
+            Modifier
                 .fillMaxWidth()
-                .then(
-                    if (fraction > 0f) {
-                        Modifier.hazeBlur(HazeInput.Sources(hazeState), topBarBlurStyle(fraction))
-                    } else {
-                        Modifier
-                    },
-                )
+                .hazeBlur(HazeInput.Sources(hazeState), topBarBlurStyle())
                 .statusBarsPadding(),
     ) {
         Row(
@@ -188,39 +205,26 @@ private fun DetailTopBar(
                 Modifier
                     .fillMaxWidth()
                     .height(56.dp)
-                    .padding(start = 12.dp, end = 16.dp),
+                    .padding(start = 4.dp, end = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                modifier =
-                    Modifier
-                        .size((40f - 12f * fraction).dp)
-                        .clip(CircleShape)
-                        .background(Color.Black.copy(alpha = 0.35f * (1f - fraction)))
-                        .clickable(onClick = onBack),
-                contentAlignment = Alignment.Center,
-            ) {
+            IconButton(onClick = onBack) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
                     contentDescription = stringResource(R.string.action_back),
-                    tint = lerp(Color.White, MaterialTheme.colorScheme.onSurface, fraction),
-                    modifier = Modifier.size(22.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            if (fraction > 0f) {
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    modifier =
-                        Modifier
-                            .weight(1f)
-                            .alpha(fraction)
-                            .basicMarquee(),
-                )
-            }
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier =
+                    Modifier
+                        .weight(1f)
+                        .basicMarquee(),
+            )
         }
     }
 }
@@ -230,6 +234,7 @@ private fun DetailContent(
     detail: ComicDetail,
     resume: ReadingProgress?,
     onOpenChapter: (albumId: String, chapterId: String, page: Int) -> Unit,
+    onBack: () -> Unit,
     placeholderCovers: Boolean,
     listState: LazyListState,
     modifier: Modifier,
@@ -239,6 +244,7 @@ private fun DetailContent(
             PlaylistHeader(
                 detail = detail,
                 resume = resume,
+                onBack = onBack,
                 placeholderCovers = placeholderCovers,
                 onOpenChapter = onOpenChapter,
             )
@@ -275,6 +281,7 @@ private fun DetailContent(
 private fun PlaylistHeader(
     detail: ComicDetail,
     resume: ReadingProgress?,
+    onBack: () -> Unit,
     placeholderCovers: Boolean,
     onOpenChapter: (albumId: String, chapterId: String, page: Int) -> Unit,
 ) {
@@ -327,6 +334,14 @@ private fun PlaylistHeader(
                             ),
                         ),
                     ),
+        )
+        DetailBackButton(
+            onBack = onBack,
+            modifier =
+                Modifier
+                    .align(Alignment.TopStart)
+                    .statusBarsPadding()
+                    .padding(start = 12.dp, top = 8.dp),
         )
         Column(
             modifier =

@@ -15,7 +15,6 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Explore
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -40,6 +39,7 @@ import com.ppxb.miwaku.R
 import com.ppxb.miwaku.model.ComicSummary
 import com.ppxb.miwaku.model.ExploreSection
 import com.ppxb.miwaku.ui.component.ComicGrid
+import com.ppxb.miwaku.ui.component.ComicGridSkeleton
 import com.ppxb.miwaku.ui.component.EmptyState
 import com.ppxb.miwaku.ui.component.ErrorState
 import com.ppxb.miwaku.ui.component.topBarBlurStyle
@@ -63,12 +63,10 @@ internal fun ExploreScreen(
     Box(modifier.fillMaxSize()) {
         when (val current = state) {
             ExploreUiState.Loading ->
-                Box(
-                    modifier = Modifier.fillMaxSize().padding(top = topBarHeight),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator()
-                }
+                ComicGridSkeleton(
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp),
+                    contentPadding = PaddingValues(top = topBarHeight + 16.dp),
+                )
 
             is ExploreUiState.Failed ->
                 ErrorState(
@@ -77,7 +75,7 @@ internal fun ExploreScreen(
                     modifier =
                         Modifier
                             .fillMaxSize()
-                            .padding(top = topBarHeight, start = 20.dp, end = 20.dp),
+                            .padding(top = topBarHeight + 16.dp, start = 20.dp, end = 20.dp),
                 )
 
             is ExploreUiState.Content -> {
@@ -90,7 +88,7 @@ internal fun ExploreScreen(
                         modifier =
                             Modifier
                                 .fillMaxSize()
-                                .padding(top = topBarHeight, start = 20.dp, end = 20.dp),
+                                .padding(top = topBarHeight + 16.dp, start = 20.dp, end = 20.dp),
                     )
                 } else {
                     ComicGrid(
@@ -102,7 +100,7 @@ internal fun ExploreScreen(
                                 .hazeSource(hazeState),
                         onComicClick = onOpenComic,
                         placeholderCovers = placeholderCovers,
-                        contentPadding = PaddingValues(top = topBarHeight),
+                        contentPadding = PaddingValues(top = topBarHeight + 16.dp),
                     )
                 }
             }

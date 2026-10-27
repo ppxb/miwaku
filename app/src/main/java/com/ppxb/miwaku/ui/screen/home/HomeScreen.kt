@@ -56,21 +56,16 @@ internal fun HomeScreen(
 
     Box(modifier.fillMaxSize()) {
         if (history.isEmpty()) {
-            Column(
+            EmptyState(
+                icon = Icons.Rounded.AutoStories,
+                title = stringResource(R.string.home_empty_title),
+                description = stringResource(R.string.home_empty_description),
                 modifier =
                     Modifier
                         .fillMaxSize()
                         .padding(horizontal = 20.dp)
-                        .padding(top = topBarHeight),
-            ) {
-                RecentHeader(history = history, onClear = viewModel::clearHistory)
-                EmptyState(
-                    icon = Icons.Rounded.AutoStories,
-                    title = stringResource(R.string.home_empty_title),
-                    description = stringResource(R.string.home_empty_description),
-                    modifier = Modifier.weight(1f),
-                )
-            }
+                        .padding(top = topBarHeight + 16.dp),
+            )
         } else {
             ComicGrid(
                 comics = history,
@@ -81,13 +76,12 @@ internal fun HomeScreen(
                         .hazeSource(hazeState),
                 onComicClick = onOpenComic,
                 placeholderCovers = placeholderCovers,
-                contentPadding = PaddingValues(top = topBarHeight),
-                header = {
-                    RecentHeader(history = history, onClear = viewModel::clearHistory)
-                },
+                contentPadding = PaddingValues(top = topBarHeight + 16.dp),
             )
         }
         HomeHeader(
+            hasHistory = history.isNotEmpty(),
+            onClear = viewModel::clearHistory,
             onOpenSettings = onOpenSettings,
             modifier =
                 Modifier
@@ -101,21 +95,35 @@ internal fun HomeScreen(
     }
 }
 
+/** The page heading, with the history action next to Settings so the grid stays clean. */
 @Composable
-private fun RecentHeader(
-    history: List<ComicSummary>,
+private fun HomeHeader(
+    hasHistory: Boolean,
     onClear: () -> Unit,
+    onOpenSettings: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(end = 8.dp, top = 4.dp),
+        modifier =
+            modifier
+                .statusBarsPadding()
+                .padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = stringResource(R.string.home_section_recent),
-            style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.weight(1f),
-        )
-        if (history.isNotEmpty()) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = stringResource(R.string.tab_home),
+                style = MaterialTheme.typography.headlineLarge,
+                color = MaterialTheme.colorScheme.onBackground,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = stringResource(R.string.home_subtitle),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (hasHistory) {
             IconButton(onClick = onClear) {
                 Icon(
                     imageVector = Icons.Rounded.DeleteSweep,
@@ -124,29 +132,6 @@ private fun RecentHeader(
                 )
             }
         }
-    }
-}
-
-/** The wordmark on the left and the one entry point we have so far on the right. */
-@Composable
-private fun HomeHeader(
-    onOpenSettings: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Row(
-        modifier =
-            modifier
-                .statusBarsPadding()
-                .height(56.dp)
-                .padding(start = 20.dp, end = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = stringResource(R.string.app_name),
-            style = MaterialTheme.typography.headlineSmall,
-            color = MaterialTheme.colorScheme.onBackground,
-        )
-        Spacer(Modifier.weight(1f))
         IconButton(onClick = onOpenSettings) {
             Icon(
                 imageVector = Icons.Rounded.Settings,
