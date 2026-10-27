@@ -44,6 +44,7 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
 
     private var loadJob: Job? = null
     private var prefetchJob: Job? = null
+    private var refreshJob: Job? = null
 
     init {
         load()
@@ -52,19 +53,24 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
     fun load() {
         loadJob?.cancel()
         prefetchJob?.cancel()
+        refreshJob?.cancel()
         loadJob = viewModelScope.launch {
+            val snapshot = withContext(Dispatchers.IO) { AppGraph.comics.detailSnapshot(id) }
+            if (snapshot != null) {
+                val freshness = if (snapshot.fresh) "fresh" else "stale"
+                ReaderPerf.log {
+                    "detail_cache_$freshness id=$id chapters=${snapshot.detail.chapters.size}"
+                }
+                show(snapshot.detail)
+                prefetchFirstChapter(snapshot.detail)
+                if (!snapshot.fresh) refreshInBackground()
+                return@launch
+            }
+
             _state.value = DetailUiState.Loading
             try {
                 val detail = withContext(Dispatchers.IO) { AppGraph.comics.detail(id) }
-                AppGraph.history.record(
-                    ComicSummary(
-                        id = detail.id,
-                        title = detail.title,
-                        author = detail.author,
-                        coverUrl = detail.coverUrl,
-                    ),
-                )
-                _state.value = DetailUiState.Content(detail)
+                show(detail)
                 prefetchFirstChapter(detail)
             } catch (e: CancellationException) {
                 throw e
@@ -72,6 +78,41 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
                 _state.value = DetailUiState.Failed("加载失败，请重试")
             }
         }
+    }
+
+    private fun refreshInBackground() {
+        refreshJob?.cancel()
+        refreshJob =
+            viewModelScope.launch {
+                val started = ReaderPerf.mark()
+                ReaderPerf.log { "detail_refresh_start id=$id" }
+                val refreshed =
+                    try {
+                        withContext(Dispatchers.IO) { AppGraph.comics.refreshDetail(id) }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        ReaderPerf.log { "detail_refresh_failed id=$id" }
+                        return@launch
+                    }
+                show(refreshed)
+                prefetchFirstChapter(refreshed)
+                ReaderPerf.log {
+                    "detail_refresh_done id=$id chapters=${refreshed.chapters.size} ms=${ReaderPerf.mark() - started}"
+                }
+            }
+    }
+
+    private fun show(detail: ComicDetail) {
+        AppGraph.history.record(
+            ComicSummary(
+                id = detail.id,
+                title = detail.title,
+                author = detail.author,
+                coverUrl = detail.coverUrl,
+            ),
+        )
+        _state.value = DetailUiState.Content(detail)
     }
 
     /**

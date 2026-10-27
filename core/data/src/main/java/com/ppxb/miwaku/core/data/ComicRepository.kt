@@ -77,17 +77,38 @@ class ComicRepository internal constructor(
             )
 
     fun detail(id: String): ComicDetail {
+        val now = System.currentTimeMillis()
         val cached = detailCache[id]
-        if (cached != null && System.currentTimeMillis() - cached.at < DETAIL_TTL_MS) {
+        if (cached != null && now - cached.at < DETAIL_TTL_MS) {
             ReaderPerf.log { "album_cache_hit id=$id" }
             return cached.detail
         }
-        detailStore.get(id)?.let { disk ->
-            detailCache[id] = CachedDetail(System.currentTimeMillis(), disk)
-            ReaderPerf.log { "album_disk_cache_hit id=$id chapters=${disk.chapters.size}" }
-            return disk
+        detailStore.get(id, DETAIL_TTL_MS)?.let { disk ->
+            detailCache[id] = CachedDetail(now - disk.ageMs, disk.detail)
+            ReaderPerf.log { "album_disk_cache_hit id=$id chapters=${disk.detail.chapters.size}" }
+            return disk.detail
         }
+        return fetchDetail(id)
+    }
 
+    /** Returns cached content even when it is stale, plus whether it passed the fresh TTL. */
+    fun detailSnapshot(id: String): DetailSnapshot? {
+        val now = System.currentTimeMillis()
+        detailCache[id]?.let { cached ->
+            val age = (now - cached.at).coerceAtLeast(0)
+            if (age <= DETAIL_STALE_TTL_MS) {
+                return DetailSnapshot(cached.detail, age <= DETAIL_TTL_MS)
+            }
+            detailCache.remove(id)
+        }
+        val disk = detailStore.get(id, DETAIL_STALE_TTL_MS) ?: return null
+        detailCache[id] = CachedDetail(now - disk.ageMs, disk.detail)
+        return DetailSnapshot(disk.detail, disk.ageMs <= DETAIL_TTL_MS)
+    }
+
+    fun refreshDetail(id: String): ComicDetail = fetchDetail(id)
+
+    private fun fetchDetail(id: String): ComicDetail {
         val started = ReaderPerf.mark()
         val payload = api.getJson("/album", mapOf("id" to id))
         val json = payload.value as? JSONObject ?: throw IOException("unexpected album payload")
@@ -246,7 +267,13 @@ class ComicRepository internal constructor(
     )
 
     private companion object {
-        const val DETAIL_TTL_MS = 10 * 60 * 1000L
+        const val DETAIL_TTL_MS = 5 * 60 * 1000L
+        const val DETAIL_STALE_TTL_MS = 7 * 24 * 60 * 60 * 1000L
         const val MAX_DETAIL_CACHE = 16
     }
 }
+
+data class DetailSnapshot(
+    val detail: ComicDetail,
+    val fresh: Boolean,
+)

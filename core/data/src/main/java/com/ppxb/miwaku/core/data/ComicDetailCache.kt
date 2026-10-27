@@ -15,12 +15,19 @@ import org.json.JSONObject
 class ComicDetailCache(context: Context) {
     private val dir = File(context.cacheDir, "$CACHE_DIR/v$CACHE_VERSION")
 
+    data class Entry(
+        val detail: ComicDetail,
+        val ageMs: Long,
+    )
+
     @Synchronized
-    fun get(id: String): ComicDetail? {
+    fun get(id: String, maxAgeMs: Long = TTL_MS): Entry? {
         val file = fileFor(id)
         if (!file.isFile) return null
-        if (System.currentTimeMillis() - file.lastModified() > TTL_MS) return null
-        return runCatching { decode(file) }.getOrNull()
+        val age = (System.currentTimeMillis() - file.lastModified()).coerceAtLeast(0)
+        if (age > maxAgeMs) return null
+        val detail = runCatching { decode(file) }.getOrNull() ?: return null
+        return Entry(detail, age)
     }
 
     @Synchronized
@@ -136,7 +143,7 @@ class ComicDetailCache(context: Context) {
     private companion object {
         const val CACHE_DIR = "reader_details"
         const val CACHE_VERSION = 1
-        const val TTL_MS = 10 * 60 * 1000L
+        const val TTL_MS = 5 * 60 * 1000L
         const val MAX_ENTRIES = 16
     }
 }
