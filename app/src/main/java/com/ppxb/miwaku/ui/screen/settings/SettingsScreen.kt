@@ -2,6 +2,11 @@ package com.ppxb.miwaku.ui.screen.settings
 
 import android.text.format.Formatter
 import androidx.annotation.StringRes
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -10,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -32,6 +38,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,6 +51,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
@@ -53,6 +61,11 @@ import com.ppxb.miwaku.core.data.settings.ThemeMode
 import com.ppxb.miwaku.ui.component.AmbientGlow
 import com.ppxb.miwaku.ui.component.SettingGroup
 import com.ppxb.miwaku.ui.component.SettingItem
+import com.ppxb.miwaku.ui.component.topBarBlurStyle
+import dev.chrisbanes.haze.HazeInput
+import dev.chrisbanes.haze.blur.hazeBlur
+import dev.chrisbanes.haze.hazeSource
+import dev.chrisbanes.haze.rememberHazeState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -85,29 +98,165 @@ fun SettingsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
+    val hazeState = rememberHazeState()
+    val density = LocalDensity.current
+    val barThreshold = with(density) { 64.dp.toPx() }
+    val showBar by remember {
+        derivedStateOf {
+            listState.firstVisibleItemIndex > 0 ||
+                listState.firstVisibleItemScrollOffset > barThreshold
+        }
+    }
 
     LaunchedEffect(Unit) {
         cacheSize = withContext(Dispatchers.IO) { AppGraph.readerCacheSizeBytes() }
     }
 
     Box(modifier.fillMaxSize()) {
-        // The theme's primary washed across the top; it leaves with the list instead of staying pinned.
-        AmbientGlow(
-            tint = MaterialTheme.colorScheme.primary,
-            modifier =
-                Modifier
-                    .align(Alignment.TopCenter)
-                    .graphicsLayer {
-                        translationY =
-                            if (listState.firstVisibleItemIndex == 0) {
-                                -listState.firstVisibleItemScrollOffset.toFloat()
-                            } else {
-                                -size.height
-                            }
-                    },
-        )
-        Column(Modifier.fillMaxSize().statusBarsPadding()) {
+        Box(Modifier.fillMaxSize().hazeSource(hazeState)) {
+            // The theme's primary washed across the top; it leaves with the list instead of staying pinned.
+            AmbientGlow(
+                tint = MaterialTheme.colorScheme.primary,
+                modifier =
+                    Modifier
+                        .align(Alignment.TopCenter)
+                        .graphicsLayer {
+                            translationY =
+                                if (listState.firstVisibleItemIndex == 0) {
+                                    -listState.firstVisibleItemScrollOffset.toFloat()
+                                } else {
+                                    -size.height
+                                }
+                        },
+            )
+            LazyColumn(
+                state = listState,
+                modifier =
+                    Modifier
+                        .fillMaxSize()
+                        .statusBarsPadding()
+                        .navigationBarsPadding(),
+                contentPadding = PaddingValues(bottom = 24.dp),
+            ) {
+                item(key = "settings-header") {
+                    Row(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .height(64.dp)
+                                .padding(start = 4.dp, end = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        IconButton(onClick = onBack) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                contentDescription = stringResource(R.string.action_back),
+                                tint = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = stringResource(R.string.settings_title),
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                    }
+                }
+                item {
+                    Box(Modifier.padding(horizontal = 16.dp)) {
+                        SettingGroup(title = stringResource(R.string.settings_section_style)) {
+                            SettingItem(
+                                title = stringResource(R.string.settings_theme),
+                                subtitle = stringResource(themeMode.labelRes()),
+                                onClick = { showThemeDialog = true },
+                            )
+                            SettingItem(
+                                title = stringResource(R.string.settings_liquid_glass),
+                                subtitle = stringResource(R.string.settings_liquid_glass_description),
+                                switch = liquidGlass to onLiquidGlassChange,
+                            )
+                        }
+                    }
+                }
+                item {
+                    Box(Modifier.padding(horizontal = 16.dp)) {
+                        SettingGroup(title = stringResource(R.string.settings_section_reader)) {
+                            SettingItem(
+                                title = stringResource(R.string.settings_prefetch_pages),
+                                subtitle = stringResource(R.string.settings_prefetch_pages_summary, prefetchAhead),
+                                onClick = { showPrefetchDialog = true },
+                            )
+                            SettingItem(
+                                title = stringResource(R.string.settings_wifi_only_prefetch),
+                                subtitle = stringResource(R.string.settings_wifi_only_prefetch_description),
+                                switch = wifiOnlyPrefetch to onWifiOnlyPrefetchChange,
+                            )
+                            SettingItem(
+                                title = stringResource(R.string.settings_low_memory),
+                                subtitle = stringResource(R.string.settings_low_memory_description),
+                                switch =
+                                    lowMemory to { enabled ->
+                                        onLowMemoryChange(enabled)
+                                        scope.launch {
+                                            withContext(Dispatchers.IO) { AppGraph.pageStore.trimToLimit() }
+                                            cacheSize =
+                                                withContext(Dispatchers.IO) { AppGraph.readerCacheSizeBytes() }
+                                        }
+                                    },
+                            )
+                        }
+                    }
+                }
+                item {
+                    Box(Modifier.padding(horizontal = 16.dp)) {
+                        SettingGroup(title = stringResource(R.string.settings_section_storage)) {
+                            val cacheLabel =
+                                cacheSize?.let { Formatter.formatShortFileSize(context, it) }
+                                    ?: stringResource(R.string.settings_reader_cache_loading)
+                            SettingItem(
+                                title = stringResource(R.string.settings_reader_cache),
+                                subtitle = stringResource(R.string.settings_reader_cache_summary, cacheLabel),
+                                onClick = { showClearCacheDialog = true },
+                            )
+                            val effectiveLimitMb =
+                                if (lowMemory) {
+                                    minOf(cacheLimitMb, LOW_MEMORY_CACHE_LIMIT_MB)
+                                } else {
+                                    cacheLimitMb
+                                }
+                            val limitLabel = cacheLimitLabel(effectiveLimitMb)
+                            SettingItem(
+                                title = stringResource(R.string.settings_cache_limit),
+                                subtitle = stringResource(R.string.settings_cache_limit_summary, limitLabel),
+                                onClick = { showCacheLimitDialog = true },
+                            )
+                        }
+                    }
+                }
+                item {
+                    Box(Modifier.padding(horizontal = 16.dp)) {
+                        SettingGroup(title = stringResource(R.string.settings_section_debug)) {
+                            SettingItem(
+                                title = stringResource(R.string.settings_placeholder_covers),
+                                subtitle = stringResource(R.string.settings_placeholder_covers_description),
+                                switch = placeholderCovers to onPlaceholderCoversChange,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        AnimatedVisibility(
+            visible = showBar,
+            modifier = Modifier.align(Alignment.TopCenter),
+            enter = fadeIn() + slideInVertically(),
+            exit = fadeOut() + slideOutVertically(),
+        ) {
             TopAppBar(
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .hazeBlur(HazeInput.Sources(hazeState), topBarBlurStyle())
+                        .statusBarsPadding(),
                 title = {
                     Text(
                         text = stringResource(R.string.settings_title),
@@ -131,86 +280,6 @@ fun SettingsScreen(
                         scrolledContainerColor = Color.Transparent,
                     ),
             )
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.weight(1f).fillMaxWidth().navigationBarsPadding(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
-            ) {
-                item {
-                    SettingGroup(title = stringResource(R.string.settings_section_style)) {
-                        SettingItem(
-                            title = stringResource(R.string.settings_theme),
-                            subtitle = stringResource(themeMode.labelRes()),
-                            onClick = { showThemeDialog = true },
-                        )
-                        SettingItem(
-                            title = stringResource(R.string.settings_liquid_glass),
-                            subtitle = stringResource(R.string.settings_liquid_glass_description),
-                            switch = liquidGlass to onLiquidGlassChange,
-                        )
-                    }
-                }
-                item {
-                    SettingGroup(title = stringResource(R.string.settings_section_reader)) {
-                        SettingItem(
-                            title = stringResource(R.string.settings_prefetch_pages),
-                            subtitle = stringResource(R.string.settings_prefetch_pages_summary, prefetchAhead),
-                            onClick = { showPrefetchDialog = true },
-                        )
-                        SettingItem(
-                            title = stringResource(R.string.settings_wifi_only_prefetch),
-                            subtitle = stringResource(R.string.settings_wifi_only_prefetch_description),
-                            switch = wifiOnlyPrefetch to onWifiOnlyPrefetchChange,
-                        )
-                        SettingItem(
-                            title = stringResource(R.string.settings_low_memory),
-                            subtitle = stringResource(R.string.settings_low_memory_description),
-                            switch =
-                                lowMemory to { enabled ->
-                                    onLowMemoryChange(enabled)
-                                    scope.launch {
-                                        withContext(Dispatchers.IO) { AppGraph.pageStore.trimToLimit() }
-                                        cacheSize =
-                                            withContext(Dispatchers.IO) { AppGraph.readerCacheSizeBytes() }
-                                    }
-                                },
-                        )
-                    }
-                }
-                item {
-                    SettingGroup(title = stringResource(R.string.settings_section_storage)) {
-                        val cacheLabel =
-                            cacheSize?.let { Formatter.formatShortFileSize(context, it) }
-                                ?: stringResource(R.string.settings_reader_cache_loading)
-                        SettingItem(
-                            title = stringResource(R.string.settings_reader_cache),
-                            subtitle = stringResource(R.string.settings_reader_cache_summary, cacheLabel),
-                            onClick = { showClearCacheDialog = true },
-                        )
-                        val effectiveLimitMb =
-                            if (lowMemory) {
-                                minOf(cacheLimitMb, LOW_MEMORY_CACHE_LIMIT_MB)
-                            } else {
-                                cacheLimitMb
-                            }
-                        val limitLabel = cacheLimitLabel(effectiveLimitMb)
-                        SettingItem(
-                            title = stringResource(R.string.settings_cache_limit),
-                            subtitle = stringResource(R.string.settings_cache_limit_summary, limitLabel),
-                            onClick = { showCacheLimitDialog = true },
-                        )
-                    }
-                }
-                item {
-                    SettingGroup(title = stringResource(R.string.settings_section_debug)) {
-                        SettingItem(
-                            title = stringResource(R.string.settings_placeholder_covers),
-                            subtitle = stringResource(R.string.settings_placeholder_covers_description),
-                            switch = placeholderCovers to onPlaceholderCoversChange,
-                        )
-                    }
-                }
-            }
         }
     }
 
