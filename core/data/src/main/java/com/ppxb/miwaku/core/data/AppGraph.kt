@@ -13,4 +13,5 @@ object AppGraph {
     private val apiClient by lazy { ApiClient() }
     val comics: ComicRepository by lazy { ComicRepository(apiClient) }
     val history: HistoryStore by lazy { HistoryStore(appContext) }
+    val progress: ProgressStore by lazy { ProgressStore(appContext) }
 }

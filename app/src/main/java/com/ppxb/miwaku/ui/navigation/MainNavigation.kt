@@ -41,6 +41,7 @@ data class DetailRoute(val id: String)
 data class ReaderRoute(
     val albumId: String,
     val chapterId: String,
+    val page: Int = 0,
 )
 
 /** The four bottom-bar destinations, in display order. */
@@ -87,6 +88,6 @@ fun NavController.navigateToDetail(id: String) {
     navigate(DetailRoute(id)) { launchSingleTop = true }
 }
 
-fun NavController.navigateToReader(albumId: String, chapterId: String) {
-    navigate(ReaderRoute(albumId, chapterId)) { launchSingleTop = true }
+fun NavController.navigateToReader(albumId: String, chapterId: String, page: Int = 0) {
+    navigate(ReaderRoute(albumId, chapterId, page)) { launchSingleTop = true }
 }

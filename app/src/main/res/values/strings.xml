@@ -48,15 +48,19 @@
     <string name="search_no_results_description">换个关键词试试</string>
 
     <!-- Detail -->
-    <string name="detail_title">详情</string>
-    <string name="detail_author">%1$s</string>
-    <string name="detail_chapters">章节</string>
+    <string name="detail_play">开始阅读</string>
+    <string name="detail_continue">继续阅读</string>
+    <string name="detail_download">下载</string>
     <string name="detail_chapter_count">%1$d 话</string>
     <string name="detail_no_chapters">暂无章节</string>
+    <string name="detail_description_more">展开</string>
+    <string name="detail_description_less">收起</string>
+    <string name="detail_back_to_top">回到顶部</string>
 
     <!-- Reader -->
     <string name="reader_title">阅读</string>
     <string name="reader_page">第 %1$d 页</string>
+    <string name="reader_page_of">第 %1$d / %2$d 页</string>
     <string name="reader_empty_title">本章没有图片</string>
     <string name="reader_empty_description">换一章试试</string>
 

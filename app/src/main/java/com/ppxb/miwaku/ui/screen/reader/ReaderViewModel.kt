@@ -25,6 +25,7 @@ internal sealed interface ReaderUiState {
 internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel() {
     private val albumId: String = checkNotNull(savedStateHandle.get<String>("albumId"))
     private val chapterId: String = checkNotNull(savedStateHandle.get<String>("chapterId"))
+    val initialPage: Int = savedStateHandle.get<Int>("page") ?: 0
 
     private val _state = MutableStateFlow<ReaderUiState>(ReaderUiState.Loading)
     val state: StateFlow<ReaderUiState> = _state.asStateFlow()
@@ -49,5 +50,9 @@ internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
                 _state.value = ReaderUiState.Failed("加载失败，请重试")
             }
         }
+    }
+
+    fun recordPage(page: Int) {
+        AppGraph.progress.record(albumId, chapterId, page)
     }
 }

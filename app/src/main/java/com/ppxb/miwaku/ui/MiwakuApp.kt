@@ -111,8 +111,8 @@ fun MiwakuApp(
             composable<DetailRoute> {
                 DetailScreen(
                     onBack = { navController.popBackStack() },
-                    onOpenChapter = { albumId, chapterId ->
-                        navController.navigateToReader(albumId, chapterId)
+                    onOpenChapter = { albumId, chapterId, page ->
+                        navController.navigateToReader(albumId, chapterId, page)
                     },
                     placeholderCovers = placeholderCovers,
                 )

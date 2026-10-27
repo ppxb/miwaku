@@ -6,12 +6,16 @@ import androidx.lifecycle.viewModelScope
 import com.ppxb.miwaku.core.data.AppGraph
 import com.ppxb.miwaku.model.ComicDetail
 import com.ppxb.miwaku.model.ComicSummary
+import com.ppxb.miwaku.model.ReadingProgress
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -28,6 +32,11 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
 
     private val _state = MutableStateFlow<DetailUiState>(DetailUiState.Loading)
     val state: StateFlow<DetailUiState> = _state.asStateFlow()
+
+    val resume: StateFlow<ReadingProgress?> =
+        AppGraph.progress.entries
+            .map { it[id] }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     private var loadJob: Job? = null
 

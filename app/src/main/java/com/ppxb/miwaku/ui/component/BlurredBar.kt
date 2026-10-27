@@ -8,9 +8,10 @@ import dev.chrisbanes.haze.blur.materials.HazeMaterials
 
 /** Frosted top-bar material tinted by the page surface; haze falls back to an opaque fill. */
 @Composable
-internal fun topBarBlurStyle(): HazeBlurStyle {
+internal fun topBarBlurStyle(alpha: Float = 1f): HazeBlurStyle {
     val surface = MaterialTheme.colorScheme.surface
-    return HazeMaterials.ultraThin(surface).then {
-        fallbackColorEffect(HazeColorEffect.tint(surface))
+    val tint = surface.copy(alpha = alpha)
+    return HazeMaterials.ultraThin(tint).then {
+        fallbackColorEffect(HazeColorEffect.tint(tint))
     }
 }
