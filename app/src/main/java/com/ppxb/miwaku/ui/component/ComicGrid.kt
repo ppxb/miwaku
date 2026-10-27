@@ -85,14 +85,12 @@ private fun ComicCard(
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
-        if (comic.author.isNotBlank()) {
-            Text(
-                text = comic.author,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
+        Text(
+            text = comic.author,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }

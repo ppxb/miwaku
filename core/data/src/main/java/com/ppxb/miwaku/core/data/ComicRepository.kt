@@ -38,19 +38,19 @@ class ComicRepository internal constructor(
     fun detail(id: String): ComicDetail {
         val payload = api.getJson("/album", mapOf("id" to id))
         val json = payload.value as? JSONObject ?: throw IOException("unexpected album payload")
-        val title = json.string("name").unescape()
+        val title = json.string("name").unescapeHtml()
         val resolvedId =
             listOf(json.string("series_id"), json.string("id"), id)
                 .firstOrNull { it.isNotBlank() && it != "0" && it != "null" }
                 ?: id
         val chapters =
             json.optJSONArray("series").toChapterList().ifEmpty {
-                listOf(ChapterSummary(id = resolvedId, name = title, sort = 1))
+                listOf(ChapterSummary(id = resolvedId, name = SINGLE_VOLUME, sort = 1))
             }
         return ComicDetail(
             id = resolvedId,
             title = title,
-            author = json.string("author").unescape(),
+            author = json.string("author").displayAuthor(),
             description = json.string("description").plainText(),
             tags = json.optJSONArray("tags").toStringList(),
             coverUrl = "${payload.imageHost}/media/albums/${resolvedId}_3x4.jpg",
@@ -86,7 +86,7 @@ class ComicRepository internal constructor(
         return ChapterContent(
             albumId = seriesId,
             chapterId = chapterId,
-            title = json.string("name").unescape(),
+            title = json.string("name").unescapeHtml(),
             pages = pages,
         )
     }
@@ -109,8 +109,8 @@ class ComicRepository internal constructor(
                 add(
                     ComicSummary(
                         id = id,
-                        title = item.string("name").unescape(),
-                        author = item.string("author").unescape(),
+                        title = item.string("name").unescapeHtml(),
+                        author = item.string("author").displayAuthor(),
                         coverUrl = "$base/media/albums/${id}_3x4.jpg",
                     ),
                 )
@@ -124,11 +124,12 @@ class ComicRepository internal constructor(
             for (i in 0 until length()) {
                 val item = optJSONObject(i) ?: continue
                 val id = item.optString("id").takeIf { it.isNotBlank() && it != "null" } ?: continue
+                val sort = item.optInt("sort")
                 add(
                     ChapterSummary(
                         id = id,
-                        name = item.string("name").unescape(),
-                        sort = item.optInt("sort"),
+                        name = item.string("name").chapterTitle(sort),
+                        sort = sort,
                     ),
                 )
             }
@@ -149,15 +150,7 @@ class ComicRepository internal constructor(
 
     private fun String.plainText(): String =
         replace(Regex("<[^>]+>"), " ")
-            .unescape()
+            .unescapeHtml()
             .replace(Regex("\\s+"), " ")
             .trim()
-
-    private fun String.unescape(): String =
-        replace("&amp;", "&")
-            .replace("&#039;", "'")
-            .replace("&#39;", "'")
-            .replace("&quot;", "\"")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
 }

@@ -41,7 +41,7 @@ class HistoryStore(context: Context) {
                         ComicSummary(
                             id = id,
                             title = item.optString("title"),
-                            author = item.optString("author"),
+                            author = item.optString("author").displayAuthor(),
                             coverUrl = item.optString("coverUrl"),
                         ),
                     )

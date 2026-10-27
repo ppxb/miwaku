@@ -51,7 +51,7 @@
 
     <!-- Detail -->
     <string name="detail_title">详情</string>
-    <string name="detail_author">作者：%1$s</string>
+    <string name="detail_author">%1$s</string>
     <string name="detail_chapters">章节</string>
     <string name="detail_chapter_count">%1$d 话</string>
     <string name="detail_no_chapters">暂无章节</string>
