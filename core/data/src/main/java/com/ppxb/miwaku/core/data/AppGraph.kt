@@ -30,19 +30,22 @@ object AppGraph {
     private val settingStore by lazy { SharedSettingSnapshotStore(appContext) }
     private val apiClient by lazy { ApiClient(httpClient, settingStore) }
     private val manifests by lazy { ChapterManifestCache(appContext) }
+    private val detailStore by lazy { ComicDetailCache(appContext) }
     val pageStore by lazy { PageImageStore(appContext, apiClient.userAgent(), httpClient) }
-    val comics: ComicRepository by lazy { ComicRepository(apiClient, manifests) }
+    val comics: ComicRepository by lazy { ComicRepository(apiClient, manifests, detailStore) }
     val history: HistoryStore by lazy { HistoryStore(appContext) }
     val progress: ProgressStore by lazy { ProgressStore(appContext) }
 
     fun isPrefetchAllowed(): Boolean =
         !settings.wifiOnlyPrefetch.value || isUnmetered()
 
-    fun readerCacheSizeBytes(): Long = pageStore.cacheSizeBytes() + manifests.sizeBytes()
+    fun readerCacheSizeBytes(): Long =
+        pageStore.cacheSizeBytes() + manifests.sizeBytes() + detailStore.sizeBytes()
 
     fun clearReaderCache() {
         pageStore.clearCache()
         manifests.clear()
+        detailStore.clear()
     }
 
     private fun isUnmetered(): Boolean =

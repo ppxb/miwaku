@@ -19,6 +19,7 @@ import org.json.JSONObject
 class ComicRepository internal constructor(
     private val api: ApiClient,
     private val manifests: ChapterManifestCache,
+    private val detailStore: ComicDetailCache,
 ) {
     private val detailCache = ConcurrentHashMap<String, CachedDetail>()
     fun latest(page: Int = 0): List<ComicSummary> =
@@ -81,6 +82,11 @@ class ComicRepository internal constructor(
             ReaderPerf.log { "album_cache_hit id=$id" }
             return cached.detail
         }
+        detailStore.get(id)?.let { disk ->
+            detailCache[id] = CachedDetail(System.currentTimeMillis(), disk)
+            ReaderPerf.log { "album_disk_cache_hit id=$id chapters=${disk.chapters.size}" }
+            return disk
+        }
 
         val started = ReaderPerf.mark()
         val payload = api.getJson("/album", mapOf("id" to id))
@@ -108,6 +114,7 @@ class ComicRepository internal constructor(
             detailCache.clear()
         }
         detailCache[id] = CachedDetail(System.currentTimeMillis(), detail)
+        detailStore.put(detail)
         ReaderPerf.log { "album_loaded id=$id chapters=${chapters.size} ms=${ReaderPerf.mark() - started}" }
         return detail
     }
