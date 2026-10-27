@@ -16,9 +16,16 @@ class HistoryStore(context: Context) {
 
     @Synchronized
     fun record(comic: ComicSummary) {
+        if (comic.id.isBlank() || comic.id == "0") return
         val next = (listOf(comic) + _entries.value.filterNot { it.id == comic.id }).take(MAX_ENTRIES)
         _entries.value = next
         prefs.edit { putString(KEY, encode(next)) }
+    }
+
+    @Synchronized
+    fun clear() {
+        _entries.value = emptyList()
+        prefs.edit { remove(KEY) }
     }
 
     private fun load(): List<ComicSummary> {
@@ -29,7 +36,7 @@ class HistoryStore(context: Context) {
                 for (i in 0 until array.length()) {
                     val item = array.optJSONObject(i) ?: continue
                     val id = item.optString("id")
-                    if (id.isEmpty()) continue
+                    if (id.isEmpty() || id == "0" || id == "null") continue
                     add(
                         ComicSummary(
                             id = id,

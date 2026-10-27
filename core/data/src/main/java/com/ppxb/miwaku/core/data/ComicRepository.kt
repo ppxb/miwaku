@@ -39,7 +39,10 @@ class ComicRepository internal constructor(
         val payload = api.getJson("/album", mapOf("id" to id))
         val json = payload.value as? JSONObject ?: throw IOException("unexpected album payload")
         val title = json.string("name").unescape()
-        val resolvedId = json.string("series_id").ifBlank { json.string("id").ifBlank { id } }
+        val resolvedId =
+            listOf(json.string("series_id"), json.string("id"), id)
+                .firstOrNull { it.isNotBlank() && it != "0" && it != "null" }
+                ?: id
         val chapters =
             json.optJSONArray("series").toChapterList().ifEmpty {
                 listOf(ChapterSummary(id = resolvedId, name = title, sort = 1))
@@ -59,10 +62,15 @@ class ComicRepository internal constructor(
         val payload = api.getJson("/chapter", mapOf("id" to chapterId))
         val json = payload.value as? JSONObject ?: throw IOException("unexpected chapter payload")
         val images = json.optJSONArray("images").toStringList()
-        val seriesId = json.string("series_id").ifBlank { albumId }
+        val seriesId =
+            json.string("series_id")
+                .takeIf { it.isNotBlank() && it != "0" && it != "null" }
+                ?: albumId
         val photoId = chapterId.toLongOrNull() ?: 0L
-        val scrambleId = Scramble.scrapeScrambleId(api.getChapterTemplate(chapterId))
-            ?: throw IOException("missing scramble id")
+        val scrambleId =
+            runCatching { Scramble.scrapeScrambleId(api.getChapterTemplate(chapterId)) }
+                .getOrNull()
+                ?: Scramble.DEFAULT_SCRAMBLE_ID
         val host = payload.imageHost.trimEnd('/')
 
         val pages =

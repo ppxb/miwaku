@@ -45,6 +45,7 @@ internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                android.util.Log.w("Reader", "chapter load failed: $albumId/$chapterId", e)
                 _state.value = ReaderUiState.Failed("加载失败，请重试")
             }
         }

@@ -7,4 +7,8 @@ import kotlinx.coroutines.flow.StateFlow
 
 internal class HomeViewModel : ViewModel() {
     val history: StateFlow<List<ComicSummary>> = AppGraph.history.entries
+
+    fun clearHistory() {
+        AppGraph.history.clear()
+    }
 }

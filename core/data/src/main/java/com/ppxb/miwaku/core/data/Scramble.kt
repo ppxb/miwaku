@@ -3,6 +3,7 @@ package com.ppxb.miwaku.core.data
 import java.security.MessageDigest
 
 internal object Scramble {
+    const val DEFAULT_SCRAMBLE_ID = 220_980
     private const val SCRAMBLE_268850 = 268_850L
     private const val SCRAMBLE_421926 = 421_926L
 

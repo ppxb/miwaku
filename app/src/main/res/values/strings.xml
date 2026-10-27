@@ -18,6 +18,7 @@
     <string name="home_empty_title">还没有阅读记录</string>
     <string name="home_empty_description">阅读过的作品会在这里出现</string>
     <string name="home_section_recent">最近阅读</string>
+    <string name="home_clear_history">删除阅读记录</string>
 
     <!-- Favorites -->
     <string name="favorites_title">收藏</string>
