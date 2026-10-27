@@ -1,5 +1,6 @@
 package com.ppxb.miwaku.core.network
 
+import android.util.Log
 import java.io.IOException
 import java.io.InputStream
 import java.net.HttpURLConnection
@@ -21,14 +22,42 @@ data class ApiPayload(
     val imageHost: String,
 )
 
-class ApiClient {
+class ApiClient(
+    private val settingStore: SettingSnapshotStore? = null,
+) {
     @Volatile
     private var snapshot: SettingSnapshot? = null
 
+    @Volatile
+    private var cacheLoaded = false
+
+    @Volatile
+    private var cacheHitLogged = false
+
+    private fun cachedSnapshot(): SettingSnapshot? {
+        if (!cacheLoaded) {
+            synchronized(this) {
+                if (!cacheLoaded) {
+                    snapshot = runCatching { settingStore?.read() }.getOrNull()
+                    cacheLoaded = true
+                }
+            }
+        }
+        return snapshot
+    }
+
     fun fetchSetting(): Result<SettingSnapshot> {
-        snapshot?.let { return Result.success(it) }
+        cachedSnapshot()?.let {
+            if (!cacheHitLogged) {
+                cacheHitLogged = true
+                perf { "setting_cache_hit host=${it.baseUrl.hostName()}" }
+            }
+            return Result.success(it)
+        }
         return synchronized(this) {
-            snapshot?.let { return@synchronized Result.success(it) }
+            cachedSnapshot()?.let { return@synchronized Result.success(it) }
+            perf { "setting_fetch_start" }
+            val started = System.currentTimeMillis()
             val failures = mutableListOf<String>()
             val deadline = System.currentTimeMillis() + TOTAL_TIMEOUT_MS
 
@@ -57,15 +86,23 @@ class ApiClient {
                     }
                 result.getOrNull()?.let {
                     snapshot = it
+                    cacheHitLogged = false
+                    settingStore?.write(it)
+                    perf {
+                        "setting_fetched host=${it.baseUrl.hostName()} ms=${System.currentTimeMillis() - started}"
+                    }
                     return Result.success(it)
                 }
                 failures += "${base.hostName()}: ${result.exceptionOrNull()?.message}"
+            }
+            perf {
+                "setting_fetch_failed count=${failures.size} ms=${System.currentTimeMillis() - started}"
             }
             Result.failure(IOException(failures.joinToString("; ")))
         }
     }
 
-    fun imageHost(): String? = snapshot?.imageHost?.trimEnd('/')
+    fun imageHost(): String? = cachedSnapshot()?.imageHost?.trimEnd('/')
 
     fun userAgent(): String = ApiConfig.USER_AGENT
 
@@ -93,6 +130,8 @@ class ApiClient {
         } catch (e: IOException) {
             if (snapshot === setting) {
                 snapshot = null
+                cacheHitLogged = false
+                settingStore?.clear()
             }
             throw e
         }
@@ -172,8 +211,15 @@ class ApiClient {
 
     private fun now(): Long = System.currentTimeMillis() / 1000
 
+    private fun perf(message: () -> String) {
+        if (Log.isLoggable(PERF_TAG, Log.DEBUG)) {
+            Log.d(PERF_TAG, message())
+        }
+    }
+
     private companion object {
         const val TIMEOUT_MS = 8_000
         const val TOTAL_TIMEOUT_MS = 15_000L
+        const val PERF_TAG = "ReaderPerf"
     }
 }
