@@ -6,8 +6,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyRow
@@ -59,13 +61,14 @@ internal fun ExploreScreen(
     val hazeState = rememberHazeState()
     var topBarHeight by remember { mutableStateOf(0.dp) }
     val density = LocalDensity.current
+    val bottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 88.dp
 
     Box(modifier.fillMaxSize()) {
         when (val current = state) {
             ExploreUiState.Loading ->
                 ComicGridSkeleton(
                     modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp),
-                    contentPadding = PaddingValues(top = topBarHeight + 16.dp),
+                    contentPadding = PaddingValues(top = topBarHeight + 16.dp, bottom = bottomPadding),
                 )
 
             is ExploreUiState.Failed ->
@@ -100,7 +103,7 @@ internal fun ExploreScreen(
                                 .hazeSource(hazeState),
                         onComicClick = onOpenComic,
                         placeholderCovers = placeholderCovers,
-                        contentPadding = PaddingValues(top = topBarHeight + 16.dp),
+                        contentPadding = PaddingValues(top = topBarHeight + 16.dp, bottom = bottomPadding),
                     )
                 }
             }
