@@ -12,6 +12,7 @@ import com.ppxb.miwaku.model.ReadingProgress
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -20,6 +21,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
 
 internal sealed interface DetailUiState {
     data object Loading : DetailUiState
@@ -107,9 +109,9 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
                 val safePage = startPage.coerceIn(0, content.pages.lastIndex)
                 val from = (safePage - 1).coerceAtLeast(0)
                 val to = (safePage + PREFETCH_AHEAD).coerceAtMost(content.pages.lastIndex)
-                for (index in from..to) {
-                    val page = content.pages[index]
-                    val image =
+                val images =
+                    (from..to).map { index ->
+                        val page = content.pages[index]
                         PageImage(
                             chapterId = content.chapterId,
                             fileName = page.fileName.ifBlank { "page-$index" },
@@ -117,12 +119,30 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
                             splitCount = page.splitCount,
                             url = page.url,
                         )
+                    }
+                val ordered = images.sortedBy { abs(it.index - safePage) }
+                ordered.firstOrNull()?.let { image ->
                     try {
                         AppGraph.pageStore.prepare(image)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (_: Exception) {
                         // The reader will fetch it on demand.
+                    }
+                }
+                for (batch in ordered.drop(1).chunked(PREFETCH_CONCURRENCY)) {
+                    coroutineScope {
+                        batch.forEach { image ->
+                            launch {
+                                try {
+                                    AppGraph.pageStore.prepare(image)
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (_: Exception) {
+                                    // The reader will fetch it on demand.
+                                }
+                            }
+                        }
                     }
                 }
                 ReaderPerf.log {
@@ -133,5 +153,6 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
 
     private companion object {
         const val PREFETCH_AHEAD = 4
+        const val PREFETCH_CONCURRENCY = 2
     }
 }

@@ -6,12 +6,14 @@ import com.ppxb.miwaku.core.data.image.ReaderPerf
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * Downloads the pages around the viewport, nearest first. The visible page is always the first
- * request, so this never delays the page the reader is looking at.
+ * Downloads the pages around the viewport, visible page first and the rest in small
+ * parallel batches. The visible page is always awaited alone, so the page the reader
+ * is looking at never queues behind the prefetch window.
  */
 internal class ReaderPrefetcher(
     private val scope: CoroutineScope,
@@ -38,16 +40,17 @@ internal class ReaderPrefetcher(
                 val started = ReaderPerf.mark()
                 val window = window(target)
                 ReaderPerf.log { "prefetch_start index=$target count=${window.size}" }
-                for (page in window) {
+
+                val visible = window.firstOrNull() ?: return@launch
+                download(visible)
+                ReaderPerf.log { "prefetch_visible_done index=$target ms=${ReaderPerf.mark() - started}" }
+
+                for (batch in window.drop(1).chunked(PREFETCH_CONCURRENCY)) {
                     if (!isActive) return@launch
-                    try {
-                        store.prepare(page)
-                        onPageReady(page)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        ReaderPerf.log { "prefetch_page_failed key=${page.cacheKey} msg=${e.message}" }
-                        onPageFailed(page)
+                    coroutineScope {
+                        batch.forEach { page ->
+                            launch { download(page) }
+                        }
                     }
                 }
                 ReaderPerf.log { "prefetch_done index=$target ms=${ReaderPerf.mark() - started}" }
@@ -56,6 +59,18 @@ internal class ReaderPrefetcher(
 
     fun cancel() {
         job?.cancel()
+    }
+
+    private suspend fun download(page: PageImage) {
+        try {
+            store.prepare(page)
+            onPageReady(page)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            ReaderPerf.log { "prefetch_page_failed key=${page.cacheKey} msg=${e.message}" }
+            onPageFailed(page)
+        }
     }
 
     private fun window(index: Int): List<PageImage> {
@@ -73,5 +88,6 @@ internal class ReaderPrefetcher(
     private companion object {
         const val AHEAD = 6
         const val BEHIND = 2
+        const val PREFETCH_CONCURRENCY = 3
     }
 }
