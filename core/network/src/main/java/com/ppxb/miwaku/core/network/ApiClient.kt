@@ -94,29 +94,6 @@ class ApiClient {
         }
     }
 
-    fun getChapterTemplate(chapterId: String): String {
-        val setting = fetchSetting().getOrThrow()
-        val ts = now()
-        return requestText(
-            base = setting.baseUrl,
-            path = "/chapter_view_template",
-            params =
-                mapOf(
-                    "id" to chapterId,
-                    "mode" to "vertical",
-                    "page" to "0",
-                    "app_img_shunt" to "1",
-                    "express" to "off",
-                    "v" to "$ts",
-                    "t" to "$ts",
-                ),
-            ts = ts,
-            version = setting.version,
-            secret = ApiConfig.CHAPTER_SECRET,
-            timeoutMs = TIMEOUT_MS,
-        )
-    }
-
     private fun requestJson(
         base: String,
         path: String,
@@ -132,7 +109,6 @@ class ApiClient {
                 params = params,
                 ts = ts,
                 version = version,
-                secret = ApiConfig.TOKEN_SECRET,
                 timeoutMs = timeoutMs,
             )
         val outer = JSONObject(body)
@@ -151,7 +127,6 @@ class ApiClient {
         params: Map<String, String>,
         ts: Long,
         version: String,
-        secret: String,
         timeoutMs: Int,
     ): String {
         val query =
@@ -164,7 +139,7 @@ class ApiClient {
                 requestMethod = "GET"
                 connectTimeout = timeoutMs
                 readTimeout = timeoutMs
-                setRequestProperty("token", Codec.token(ts, secret))
+                setRequestProperty("token", Codec.token(ts))
                 setRequestProperty("tokenparam", Codec.tokenParam(ts, version))
                 setRequestProperty("user-agent", ApiConfig.USER_AGENT)
                 setRequestProperty("accept", "*/*")

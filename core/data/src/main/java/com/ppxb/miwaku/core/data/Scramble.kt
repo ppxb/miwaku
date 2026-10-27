@@ -3,24 +3,20 @@ package com.ppxb.miwaku.core.data
 import java.security.MessageDigest
 
 internal object Scramble {
-    const val DEFAULT_SCRAMBLE_ID = 220_980
+    private const val JM_SCRAMBLE_ID = 220_980
     private const val SCRAMBLE_268850 = 268_850L
     private const val SCRAMBLE_421926 = 421_926L
 
-    fun scrapeScrambleId(html: String): Int? =
-        Regex("""var\s+scramble_id\s*=\s*(\d+)""")
-            .find(html)
-            ?.groupValues
-            ?.get(1)
-            ?.toIntOrNull()
-
-    fun splitCount(scrambleId: Int, photoId: Long, filename: String): Int {
-        if (photoId < scrambleId) return 0
+    fun splitCount(photoId: Long, filename: String): Int {
+        if (photoId < JM_SCRAMBLE_ID) return 0
         if (photoId < SCRAMBLE_268850) return 10
 
-        val modulus = if (photoId < SCRAMBLE_421926) 10 else 8
-        val lastDigit = md5Hex("$photoId$filename").last().digitToInt(16)
-        return lastDigit % modulus * 2 + 2
+        val lastChar = md5Hex("$photoId$filename").last().code
+        return if (photoId > SCRAMBLE_421926) {
+            lastChar % 8 * 2 + 2
+        } else {
+            lastChar % 10 * 2 + 2
+        }
     }
 
     private fun md5Hex(value: String): String =

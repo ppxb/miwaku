@@ -7,7 +7,7 @@ import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
 
 internal object Codec {
-    fun token(ts: Long, secret: String = ApiConfig.TOKEN_SECRET): String = md5Hex("$ts$secret")
+    fun token(ts: Long): String = md5Hex("$ts${ApiConfig.TOKEN_SECRET}")
 
     fun tokenParam(ts: Long, version: String = ApiConfig.APP_VERSION): String = "$ts,$version"
 

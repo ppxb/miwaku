@@ -67,10 +67,6 @@ class ComicRepository internal constructor(
                 .takeIf { it.isNotBlank() && it != "0" && it != "null" }
                 ?: albumId
         val photoId = chapterId.toLongOrNull() ?: 0L
-        val scrambleId =
-            runCatching { Scramble.scrapeScrambleId(api.getChapterTemplate(chapterId)) }
-                .getOrNull()
-                ?: Scramble.DEFAULT_SCRAMBLE_ID
         val host = payload.imageHost.trimEnd('/')
 
         val pages =
@@ -80,7 +76,7 @@ class ComicRepository internal constructor(
                     if (filename.endsWith(".gif", ignoreCase = true)) {
                         0
                     } else {
-                        Scramble.splitCount(scrambleId, photoId, filename.substringBeforeLast('.'))
+                        Scramble.splitCount(photoId, filename.substringBeforeLast('.'))
                     }
                 ReaderPage(
                     url = "$host/media/photos/$chapterId/$filename",

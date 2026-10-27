@@ -7,17 +7,25 @@ import android.graphics.Rect
 import androidx.core.graphics.createBitmap
 import coil.size.Size
 import coil.transform.Transformation
+import kotlin.math.min
+import kotlin.math.roundToInt
 
+/**
+ * Mirrors jm-boom's reader decoder: reorder the original rows, then downscale the result so
+ * decoding at full resolution does not leave a full-size copy in memory.
+ */
 internal class ScrambleTransformation(private val count: Int) : Transformation {
-    override val cacheKey: String = "scramble-$count"
+    override val cacheKey: String = "scramble-$count-$MAX_OUTPUT_HEIGHT"
 
     override suspend fun transform(input: Bitmap, size: Size): Bitmap {
         if (count <= 1 || input.width <= 0 || input.height <= 0) return input
 
         val width = input.width
         val height = input.height
-        val config = input.config ?: Bitmap.Config.ARGB_8888
-        val output = createBitmap(width, height, config)
+        val scale = min(1f, MAX_OUTPUT_HEIGHT.toFloat() / height)
+        val targetWidth = (width * scale).roundToInt().coerceAtLeast(1)
+        val targetHeight = (height * scale).roundToInt().coerceAtLeast(1)
+        val output = createBitmap(targetWidth, targetHeight, input.config ?: Bitmap.Config.ARGB_8888)
         val canvas = Canvas(output)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
         val over = height % count
@@ -26,14 +34,19 @@ internal class ScrambleTransformation(private val count: Int) : Transformation {
         for (i in 0 until count) {
             val sourceHeight = if (i == 0) move + over else move
             val sourceTop = height - move * (i + 1) - over
-            val destTop = if (i == 0) 0 else move * i + over
+            val destTop = (if (i == 0) 0 else move * i + over) * scale
+            val destBottom = ((if (i == 0) 0 else move * i + over) + sourceHeight) * scale
             canvas.drawBitmap(
                 input,
                 Rect(0, sourceTop, width, sourceTop + sourceHeight),
-                Rect(0, destTop, width, destTop + sourceHeight),
+                Rect(0, destTop.roundToInt(), targetWidth, destBottom.roundToInt()),
                 paint,
             )
         }
         return output
+    }
+
+    private companion object {
+        const val MAX_OUTPUT_HEIGHT = 4096
     }
 }

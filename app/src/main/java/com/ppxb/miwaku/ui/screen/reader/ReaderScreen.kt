@@ -30,14 +30,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.rememberAsyncImagePainter
 import coil.request.ImageRequest
-import coil.size.Scale
+import coil.size.Size
 import com.ppxb.miwaku.R
 import com.ppxb.miwaku.model.ChapterContent
 import com.ppxb.miwaku.model.ReaderPage
@@ -143,14 +142,11 @@ private fun ReaderPageImage(
     index: Int,
 ) {
     val context = LocalContext.current
-    val resources = LocalResources.current
-    val widthPx = resources.displayMetrics.widthPixels
     val request =
-        remember(page.url, page.splitCount, widthPx) {
+        remember(page.url, page.splitCount) {
             ImageRequest.Builder(context)
                 .data(page.url)
-                .size(widthPx, MAX_READER_HEIGHT_PX)
-                .scale(Scale.FIT)
+                .size(Size.ORIGINAL)
                 .apply {
                     if (page.splitCount > 0) {
                         transformations(ScrambleTransformation(page.splitCount))
@@ -179,5 +175,3 @@ private fun ReaderPageImage(
                 .background(MaterialTheme.colorScheme.surfaceContainer),
     )
 }
-
-private const val MAX_READER_HEIGHT_PX = 4096
