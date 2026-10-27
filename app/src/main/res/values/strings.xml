@@ -28,10 +28,8 @@
 
     <!-- Explore -->
     <string name="explore_title">探索</string>
-    <string name="explore_subtitle">发现新作品与每周更新</string>
     <string name="explore_empty_title">内容正在准备中</string>
-    <string name="explore_empty_description">推荐、排行与每周更新将在这里呈现</string>
-    <string name="explore_section_latest">最新更新</string>
+    <string name="explore_empty_description">推荐分组会在这里呈现</string>
 
     <!-- Category -->
     <string name="category_title">分类</string>

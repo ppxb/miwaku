@@ -39,7 +39,7 @@ fun MiwakuTheme(
     ) {
         CompositionLocalProvider(
             LocalRippleConfiguration provides SoftRipple,
-            LocalContentColor provides colorScheme.onSurfaceVariant,
+            LocalContentColor provides colorScheme.onSurface,
             content = content,
         )
     }

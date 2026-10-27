@@ -5,12 +5,13 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -67,25 +68,7 @@ fun MiwakuApp(
             !destination.isOn(DetailRoute::class) &&
             !destination.isOn(ReaderRoute::class)
 
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        containerColor = MaterialTheme.colorScheme.background,
-        bottomBar = {
-            AnimatedVisibility(
-                visible = showBottomBar,
-                enter = fadeIn(),
-                exit = fadeOut(),
-            ) {
-                AppBottomBar(
-                    selectedTab = selectedTab,
-                    onTabSelect = { navController.navigateToTab(it) },
-                    searchSelected = destination.isOn(SearchRoute),
-                    onSearchClick = { navController.navigateToSearch() },
-                    liquidGlass = liquidGlass,
-                )
-            }
-        },
-    ) { innerPadding ->
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         NavHost(
             navController = navController,
             startDestination = MainTab.Home.route,
@@ -95,13 +78,7 @@ fun MiwakuApp(
             exitTransition = { fadeOut() + slideOutHorizontally { it } },
             popEnterTransition = { fadeIn() + slideInHorizontally { -it } },
             popExitTransition = { fadeOut() + slideOutHorizontally { it } },
-            modifier =
-                Modifier
-                    .fillMaxSize()
-                    // Edge-to-edge: pages paint their backgrounds (Settings' glow included) under
-                    // the status bar and inset only their content. The bar still reserves the
-                    // bottom, and when it is hidden this collapses to the system bar inset.
-                    .padding(bottom = innerPadding.calculateBottomPadding()),
+            modifier = Modifier.fillMaxSize(),
         ) {
             composable<HomeRoute> {
                 HomeScreen(
@@ -154,6 +131,20 @@ fun MiwakuApp(
                     onBack = { navController.popBackStack() },
                 )
             }
+        }
+        AnimatedVisibility(
+            visible = showBottomBar,
+            modifier = Modifier.align(Alignment.BottomCenter),
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
+            AppBottomBar(
+                selectedTab = selectedTab,
+                onTabSelect = { navController.navigateToTab(it) },
+                searchSelected = destination.isOn(SearchRoute),
+                onSearchClick = { navController.navigateToSearch() },
+                liquidGlass = liquidGlass,
+            )
         }
     }
 }

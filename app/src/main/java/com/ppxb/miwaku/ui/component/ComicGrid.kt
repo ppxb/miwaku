@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -31,14 +32,19 @@ fun ComicGrid(
     modifier: Modifier = Modifier,
     onComicClick: (ComicSummary) -> Unit = {},
     placeholderCovers: Boolean = false,
+    contentPadding: PaddingValues = PaddingValues(),
+    header: (@Composable () -> Unit)? = null,
 ) {
     LazyVerticalGrid(
         columns = GridCells.Fixed(3),
         modifier = modifier,
-        contentPadding = PaddingValues(bottom = 16.dp),
+        contentPadding = contentPadding,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        if (header != null) {
+            item(span = { GridItemSpan(maxLineSpan) }) { header() }
+        }
         items(comics, key = { it.id }) { comic ->
             ComicCard(
                 comic = comic,

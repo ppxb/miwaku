@@ -116,7 +116,7 @@ private fun DetailContent(
 ) {
     LazyColumn(
         modifier = modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 32.dp),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         item {

@@ -6,6 +6,7 @@ import com.ppxb.miwaku.model.ChapterContent
 import com.ppxb.miwaku.model.ChapterSummary
 import com.ppxb.miwaku.model.ComicDetail
 import com.ppxb.miwaku.model.ComicSummary
+import com.ppxb.miwaku.model.ExploreSection
 import com.ppxb.miwaku.model.ReaderPage
 import com.ppxb.miwaku.model.SearchResult
 import java.io.IOException
@@ -34,6 +35,40 @@ class ComicRepository internal constructor(
             "/categories/filter",
             mapOf("page" to "$page", "order" to "", "c" to "", "o" to order),
         ).toComicList()
+
+    fun exploreSections(): List<ExploreSection> {
+        val payload = api.getJson("/promote")
+        val array = payload.value as? JSONArray ?: return emptyList()
+        return buildList {
+            for (i in 0 until array.length()) {
+                val item = array.optJSONObject(i) ?: continue
+                val title = item.string("title").unescapeHtml().trim()
+                if (isUnsupportedSection(title)) continue
+                val comics = item.optJSONArray("content")?.toComicList(payload.imageHost) ?: emptyList()
+                if (comics.isEmpty()) continue
+                add(
+                    ExploreSection(
+                        id = item.string("id"),
+                        title = title,
+                        comics = comics,
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun isUnsupportedSection(title: String): Boolean =
+        title in
+            setOf(
+                "禁漫小说",
+                "禁漫书库",
+                "禁漫書庫",
+                "禁漫小說",
+                "最新成人APP",
+                "大人気エロ同人",
+                "人気のエロ動画",
+                "オススメ動画サイト",
+            )
 
     fun detail(id: String): ComicDetail {
         val payload = api.getJson("/album", mapOf("id" to id))

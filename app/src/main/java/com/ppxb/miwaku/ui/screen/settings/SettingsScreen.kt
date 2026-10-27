@@ -106,7 +106,7 @@ fun SettingsScreen(
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp),
             ) {
                 item {
                     SettingGroup(title = stringResource(R.string.settings_section_style)) {
