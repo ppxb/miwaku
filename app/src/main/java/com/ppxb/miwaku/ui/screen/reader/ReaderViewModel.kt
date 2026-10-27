@@ -169,7 +169,13 @@ internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
                 pages = images,
                 onPageReady = { image -> _failedPages.update { it - image.cacheKey } },
                 onPageFailed = { image -> _failedPages.update { it + image.cacheKey } },
-                ahead = AppGraph.settings.readerPrefetchAhead.value,
+                ahead =
+                    if (AppGraph.settings.lowMemory.value) {
+                        minOf(AppGraph.settings.readerPrefetchAhead.value, LOW_MEMORY_PREFETCH_AHEAD)
+                    } else {
+                        AppGraph.settings.readerPrefetchAhead.value
+                    },
+                behind = if (AppGraph.settings.lowMemory.value) LOW_MEMORY_PREFETCH_BEHIND else 2,
                 prefetchAllowed = { AppGraph.isPrefetchAllowed() },
             ).also { it.start(initialPage) }
         viewModelScope.launch(Dispatchers.IO) { AppGraph.pageStore.loadCachedSizes(images) }
@@ -224,6 +230,10 @@ internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
                     ReaderPerf.log { "next_manifest_skipped_metered next=${next.id}" }
                     return@launch
                 }
+                if (AppGraph.settings.lowMemory.value) {
+                    ReaderPerf.log { "next_manifest_skipped_low_memory next=${next.id}" }
+                    return@launch
+                }
                 val started = ReaderPerf.mark()
                 ReaderPerf.log { "next_manifest_start next=${next.id}" }
                 try {
@@ -244,6 +254,7 @@ internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
         val next = (_nextChapter.value as? NextChapterState.Next)?.chapter ?: return
         if (content.pages.isEmpty()) return
         if (page < content.pages.size - NEXT_PREFETCH_THRESHOLD) return
+        if (AppGraph.settings.lowMemory.value) return
         if (!AppGraph.isPrefetchAllowed()) return
         if (!nextPrefetchStarted.compareAndSet(false, true)) return
         nextPrefetchJob =
@@ -288,5 +299,7 @@ internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
     private companion object {
         const val NEXT_PREFETCH_THRESHOLD = 5
         const val NEXT_PREFETCH_PAGES = 3
+        const val LOW_MEMORY_PREFETCH_AHEAD = 2
+        const val LOW_MEMORY_PREFETCH_BEHIND = 1
     }
 }

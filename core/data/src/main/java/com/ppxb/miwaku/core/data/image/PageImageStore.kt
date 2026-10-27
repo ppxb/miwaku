@@ -55,6 +55,7 @@ class PageImageStore(
     private val userAgent: String,
     private val httpClient: OkHttpClient,
     private val alternateImageHost: () -> String? = { null },
+    private val cacheLimitBytes: () -> Long = { DEFAULT_CACHE_LIMIT_BYTES },
 ) {
     private val cacheRoot = File(context.cacheDir, "$CACHE_DIR/v$CACHE_VERSION")
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -321,6 +322,15 @@ class PageImageStore(
         }
     }
 
+    suspend fun trimToLimit() {
+        if (!trimming.compareAndSet(false, true)) return
+        try {
+            withContext(Dispatchers.IO) { trim() }
+        } finally {
+            trimming.set(false)
+        }
+    }
+
     private fun trim() {
         val now = System.currentTimeMillis()
         val allFiles = cacheRoot.walkTopDown().filter { it.isFile }.toList()
@@ -329,9 +339,10 @@ class PageImageStore(
             .forEach { it.delete() }
         val files = allFiles.filter { it.isFile && !it.name.endsWith(".tmp") }
         if (files.isEmpty()) return
+        val configured = cacheLimitBytes().coerceAtLeast(MIN_CACHE_BYTES)
         val budget =
             minOf(
-                MAX_CACHE_BYTES,
+                configured,
                 maxOf(MIN_CACHE_BYTES, cacheRoot.usableSpace / CACHE_FREE_SPACE_DIVISOR),
             )
         var total = files.sumOf { it.length() }
@@ -383,7 +394,7 @@ class PageImageStore(
         const val CACHE_VERSION = 1
         const val MAX_CONCURRENT_DOWNLOADS = 3
         const val MAX_IMAGE_BYTES = 64L * 1024 * 1024
-        const val MAX_CACHE_BYTES = 1024L * 1024 * 1024
+        const val DEFAULT_CACHE_LIMIT_BYTES = 1024L * 1024 * 1024
         const val MIN_CACHE_BYTES = 256L * 1024 * 1024
         const val CACHE_FREE_SPACE_DIVISOR = 4L
         const val RECENT_FILE_GRACE_MS = 10 * 60 * 1000L

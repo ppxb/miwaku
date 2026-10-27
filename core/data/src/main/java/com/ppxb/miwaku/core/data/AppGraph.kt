@@ -37,6 +37,7 @@ object AppGraph {
             userAgent = apiClient.userAgent(),
             httpClient = httpClient,
             alternateImageHost = { apiClient.refreshImageHost() },
+            cacheLimitBytes = { effectiveCacheLimitBytes() },
         )
     }
     val comics: ComicRepository by lazy { ComicRepository(apiClient, manifests, detailStore) }
@@ -45,6 +46,17 @@ object AppGraph {
 
     fun isPrefetchAllowed(): Boolean =
         !settings.wifiOnlyPrefetch.value || isUnmetered()
+
+    fun effectiveCacheLimitBytes(): Long {
+        val selected = settings.readerCacheLimitMb.value
+        val capped =
+            if (settings.lowMemory.value) {
+                minOf(selected, LOW_MEMORY_CACHE_LIMIT_MB)
+            } else {
+                selected
+            }
+        return capped * 1024L * 1024L
+    }
 
     fun readerCacheSizeBytes(): Long =
         pageStore.cacheSizeBytes() + manifests.sizeBytes() + detailStore.sizeBytes()
@@ -61,4 +73,6 @@ object AppGraph {
             val capabilities = manager.getNetworkCapabilities(manager.activeNetwork) ?: return false
             capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
         }.getOrDefault(false)
+
+    private const val LOW_MEMORY_CACHE_LIMIT_MB = 256
 }

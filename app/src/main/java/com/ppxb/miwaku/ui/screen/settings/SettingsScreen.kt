@@ -70,11 +70,16 @@ fun SettingsScreen(
     onPrefetchAheadChange: (Int) -> Unit,
     wifiOnlyPrefetch: Boolean,
     onWifiOnlyPrefetchChange: (Boolean) -> Unit,
+    lowMemory: Boolean,
+    onLowMemoryChange: (Boolean) -> Unit,
+    cacheLimitMb: Int,
+    onCacheLimitMbChange: (Int) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var showThemeDialog by rememberSaveable { mutableStateOf(false) }
     var showPrefetchDialog by rememberSaveable { mutableStateOf(false) }
+    var showCacheLimitDialog by rememberSaveable { mutableStateOf(false) }
     var showClearCacheDialog by rememberSaveable { mutableStateOf(false) }
     var cacheSize by remember { mutableStateOf<Long?>(null) }
     val context = LocalContext.current
@@ -157,6 +162,19 @@ fun SettingsScreen(
                             subtitle = stringResource(R.string.settings_wifi_only_prefetch_description),
                             switch = wifiOnlyPrefetch to onWifiOnlyPrefetchChange,
                         )
+                        SettingItem(
+                            title = stringResource(R.string.settings_low_memory),
+                            subtitle = stringResource(R.string.settings_low_memory_description),
+                            switch =
+                                lowMemory to { enabled ->
+                                    onLowMemoryChange(enabled)
+                                    scope.launch {
+                                        withContext(Dispatchers.IO) { AppGraph.pageStore.trimToLimit() }
+                                        cacheSize =
+                                            withContext(Dispatchers.IO) { AppGraph.readerCacheSizeBytes() }
+                                    }
+                                },
+                        )
                     }
                 }
                 item {
@@ -168,6 +186,18 @@ fun SettingsScreen(
                             title = stringResource(R.string.settings_reader_cache),
                             subtitle = stringResource(R.string.settings_reader_cache_summary, cacheLabel),
                             onClick = { showClearCacheDialog = true },
+                        )
+                        val effectiveLimitMb =
+                            if (lowMemory) {
+                                minOf(cacheLimitMb, LOW_MEMORY_CACHE_LIMIT_MB)
+                            } else {
+                                cacheLimitMb
+                            }
+                        val limitLabel = cacheLimitLabel(effectiveLimitMb)
+                        SettingItem(
+                            title = stringResource(R.string.settings_cache_limit),
+                            subtitle = stringResource(R.string.settings_cache_limit_summary, limitLabel),
+                            onClick = { showCacheLimitDialog = true },
                         )
                     }
                 }
@@ -202,6 +232,20 @@ fun SettingsScreen(
                 showPrefetchDialog = false
             },
             onDismiss = { showPrefetchDialog = false },
+        )
+    }
+    if (showCacheLimitDialog) {
+        CacheLimitDialog(
+            current = cacheLimitMb,
+            onSelect = { mb ->
+                onCacheLimitMbChange(mb)
+                showCacheLimitDialog = false
+                scope.launch {
+                    withContext(Dispatchers.IO) { AppGraph.pageStore.trimToLimit() }
+                    cacheSize = withContext(Dispatchers.IO) { AppGraph.readerCacheSizeBytes() }
+                }
+            },
+            onDismiss = { showCacheLimitDialog = false },
         )
     }
     if (showClearCacheDialog) {
@@ -240,6 +284,11 @@ private fun ThemeMode.labelRes(): Int =
     }
 
 private val PrefetchOptions = listOf(3, 6, 10)
+private val CacheLimitOptions = listOf(512, 1024, 2048)
+private const val LOW_MEMORY_CACHE_LIMIT_MB = 256
+
+private fun cacheLimitLabel(mb: Int): String =
+    if (mb >= 1024 && mb % 1024 == 0) "${mb / 1024} GB" else "$mb MB"
 
 @Composable
 private fun PrefetchDialog(
@@ -269,6 +318,49 @@ private fun PrefetchDialog(
                         Spacer(Modifier.width(12.dp))
                         Text(
                             text = stringResource(R.string.settings_prefetch_pages_option, pages),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        },
+    )
+}
+
+@Composable
+private fun CacheLimitDialog(
+    current: Int,
+    onSelect: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.settings_cache_limit)) },
+        text = {
+            Column {
+                CacheLimitOptions.forEach { mb ->
+                    Row(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .selectable(
+                                    selected = mb == current,
+                                    role = Role.RadioButton,
+                                    onClick = { onSelect(mb) },
+                                ).padding(horizontal = 8.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = mb == current, onClick = null)
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            text = cacheLimitLabel(mb),
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurface,
                         )

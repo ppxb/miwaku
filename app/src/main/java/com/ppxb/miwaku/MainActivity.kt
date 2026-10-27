@@ -24,6 +24,8 @@ class MainActivity : ComponentActivity() {
             val placeholderCovers by settings.placeholderCovers.collectAsState()
             val prefetchAhead by settings.readerPrefetchAhead.collectAsState()
             val wifiOnlyPrefetch by settings.wifiOnlyPrefetch.collectAsState()
+            val lowMemory by settings.lowMemory.collectAsState()
+            val cacheLimitMb by settings.readerCacheLimitMb.collectAsState()
             val darkTheme =
                 when (themeMode) {
                     ThemeMode.System -> isSystemInDarkTheme()
@@ -43,6 +45,10 @@ class MainActivity : ComponentActivity() {
                     onPrefetchAheadChange = settings::setReaderPrefetchAhead,
                     wifiOnlyPrefetch = wifiOnlyPrefetch,
                     onWifiOnlyPrefetchChange = settings::setWifiOnlyPrefetch,
+                    lowMemory = lowMemory,
+                    onLowMemoryChange = settings::setLowMemory,
+                    cacheLimitMb = cacheLimitMb,
+                    onCacheLimitMbChange = settings::setReaderCacheLimitMb,
                 )
             }
         }

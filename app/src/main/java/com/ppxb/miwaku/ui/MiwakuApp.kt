@@ -54,6 +54,10 @@ fun MiwakuApp(
     onPrefetchAheadChange: (Int) -> Unit,
     wifiOnlyPrefetch: Boolean,
     onWifiOnlyPrefetchChange: (Boolean) -> Unit,
+    lowMemory: Boolean,
+    onLowMemoryChange: (Boolean) -> Unit,
+    cacheLimitMb: Int,
+    onCacheLimitMbChange: (Int) -> Unit,
 ) {
     val navController = rememberNavController()
     val currentDestination by navController.currentBackStackEntryAsState()
@@ -141,6 +145,10 @@ fun MiwakuApp(
                     onPrefetchAheadChange = onPrefetchAheadChange,
                     wifiOnlyPrefetch = wifiOnlyPrefetch,
                     onWifiOnlyPrefetchChange = onWifiOnlyPrefetchChange,
+                    lowMemory = lowMemory,
+                    onLowMemoryChange = onLowMemoryChange,
+                    cacheLimitMb = cacheLimitMb,
+                    onCacheLimitMbChange = onCacheLimitMbChange,
                     onBack = { navController.popBackStack() },
                 )
             }

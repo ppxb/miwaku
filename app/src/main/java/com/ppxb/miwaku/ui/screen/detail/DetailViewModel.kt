@@ -111,8 +111,11 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
                     } ?: return@launch
                 if (content.pages.isEmpty()) return@launch
                 val safePage = startPage.coerceIn(0, content.pages.lastIndex)
-                val from = (safePage - 1).coerceAtLeast(0)
-                val to = (safePage + PREFETCH_AHEAD).coerceAtMost(content.pages.lastIndex)
+                val lowMemory = AppGraph.settings.lowMemory.value
+                val from = (safePage - if (lowMemory) 0 else 1).coerceAtLeast(0)
+                val to =
+                    (safePage + if (lowMemory) 0 else PREFETCH_AHEAD)
+                        .coerceAtMost(content.pages.lastIndex)
                 val images =
                     (from..to).map { index ->
                         val page = content.pages[index]

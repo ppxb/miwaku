@@ -76,6 +76,8 @@
     <string name="settings_prefetch_pages_option">%1$d 页</string>
     <string name="settings_wifi_only_prefetch">仅 Wi-Fi 预取</string>
     <string name="settings_wifi_only_prefetch_description">移动网络只加载当前可见页，不预取后续页</string>
+    <string name="settings_low_memory">低内存模式</string>
+    <string name="settings_low_memory_description">减少预取页数，并把阅读缓存限制在 256 MB 以内</string>
     <string name="settings_section_style">样式</string>
     <string name="settings_theme">主题</string>
     <string name="settings_theme_system">跟随系统</string>
@@ -88,6 +90,8 @@
     <string name="settings_reader_cache">阅读缓存</string>
     <string name="settings_reader_cache_loading">正在计算…</string>
     <string name="settings_reader_cache_summary">%1$s · 点击清理</string>
+    <string name="settings_cache_limit">缓存上限</string>
+    <string name="settings_cache_limit_summary">%1$s · 超出后自动清理旧页面</string>
     <string name="settings_clear_cache_title">清理阅读缓存？</string>
     <string name="settings_clear_cache_message">将删除已缓存的页面和章节索引，之后需要重新加载。</string>
     <string name="settings_placeholder_covers">封面占位图</string>
