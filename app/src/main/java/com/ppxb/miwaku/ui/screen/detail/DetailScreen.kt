@@ -1,6 +1,7 @@
 package com.ppxb.miwaku.ui.screen.detail
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -10,6 +11,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +34,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
@@ -53,6 +56,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -452,35 +456,80 @@ private fun DownloadButton() {
 @Composable
 private fun DescriptionBlock(description: String) {
     var expanded by remember { mutableStateOf(false) }
+    var overflowed by remember(description) { mutableStateOf(false) }
+    val toggleable = expanded || overflowed
+    val interactionSource = remember { MutableInteractionSource() }
     Column(
         modifier =
             Modifier
                 .fillMaxWidth()
+                .animateContentSize()
+                .then(
+                    if (toggleable) {
+                        Modifier.clickable(
+                            interactionSource = interactionSource,
+                            indication = null,
+                        ) { expanded = !expanded }
+                    } else {
+                        Modifier
+                    },
+                )
                 .padding(horizontal = 20.dp, vertical = 12.dp),
     ) {
-        Text(
-            text = description,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = if (expanded) Int.MAX_VALUE else 3,
-            overflow = TextOverflow.Ellipsis,
-        )
-        if (description.length > 100) {
-            TextButton(
-                onClick = { expanded = !expanded },
-                contentPadding = PaddingValues(0.dp),
-            ) {
-                Text(
-                    text =
-                        stringResource(
-                            if (expanded) {
-                                R.string.detail_description_less
-                            } else {
-                                R.string.detail_description_more
-                            },
-                        ),
-                )
+        Box(Modifier.fillMaxWidth()) {
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = if (expanded) Int.MAX_VALUE else 3,
+                overflow = TextOverflow.Ellipsis,
+                onTextLayout = { result ->
+                    if (!expanded) overflowed = result.hasVisualOverflow
+                },
+            )
+            // Bottom fade and a caret, like the reference detail page, mark the text as expandable.
+            if (!expanded && overflowed) {
+                Box(
+                    modifier =
+                        Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .height(28.dp)
+                            .background(
+                                Brush.verticalGradient(
+                                    listOf(Color.Transparent, MaterialTheme.colorScheme.background),
+                                ),
+                            ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.KeyboardArrowDown,
+                        contentDescription = stringResource(R.string.detail_description_more),
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier =
+                            Modifier
+                                .background(
+                                    Brush.radialGradient(
+                                        listOf(MaterialTheme.colorScheme.background, Color.Transparent),
+                                    ),
+                                )
+                                .size(20.dp),
+                    )
+                }
             }
+        }
+        if (expanded) {
+            Icon(
+                imageVector = Icons.Rounded.KeyboardArrowDown,
+                contentDescription = stringResource(R.string.detail_description_less),
+                tint = MaterialTheme.colorScheme.primary,
+                modifier =
+                    Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .padding(top = 4.dp)
+                        .size(20.dp)
+                        .rotate(180f),
+            )
         }
     }
 }
