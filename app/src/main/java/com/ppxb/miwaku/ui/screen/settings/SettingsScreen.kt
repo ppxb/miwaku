@@ -41,12 +41,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -101,6 +103,7 @@ fun SettingsScreen(
     val hazeState = rememberHazeState()
     val density = LocalDensity.current
     val barThreshold = with(density) { 64.dp.toPx() }
+    var headerItemHeightPx by remember { mutableIntStateOf(0) }
     val showBar by remember {
         derivedStateOf {
             listState.firstVisibleItemIndex > 0 ||
@@ -125,7 +128,7 @@ fun SettingsScreen(
                                 if (listState.firstVisibleItemIndex == 0) {
                                     -listState.firstVisibleItemScrollOffset.toFloat()
                                 } else {
-                                    -size.height
+                                    -headerItemHeightPx.toFloat()
                                 }
                         },
             )
@@ -139,70 +142,71 @@ fun SettingsScreen(
                 contentPadding = PaddingValues(bottom = 24.dp),
             ) {
                 item(key = "settings-header") {
-                    Row(
-                        modifier =
-                            Modifier
-                                .fillMaxWidth()
-                                .height(64.dp)
-                                .padding(start = 4.dp, end = 16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        IconButton(onClick = onBack) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                                contentDescription = stringResource(R.string.action_back),
-                                tint = MaterialTheme.colorScheme.onSurface,
+                    // The header and the first groups share one item: the ambient glow tracks the
+                    // item's scroll offset, so the item must outlast the glow or the background
+                    // would jump to the page colour the moment the header leaves.
+                    Column(Modifier.onSizeChanged { headerItemHeightPx = it.height }) {
+                        Row(
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height(64.dp)
+                                    .padding(start = 4.dp, end = 16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            IconButton(onClick = onBack) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                    contentDescription = stringResource(R.string.action_back),
+                                    tint = MaterialTheme.colorScheme.onSurface,
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = stringResource(R.string.settings_title),
+                                style = MaterialTheme.typography.titleMedium,
                             )
                         }
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = stringResource(R.string.settings_title),
-                            style = MaterialTheme.typography.titleMedium,
-                        )
-                    }
-                }
-                item {
-                    Box(Modifier.padding(horizontal = 16.dp)) {
-                        SettingGroup(title = stringResource(R.string.settings_section_style)) {
-                            SettingItem(
-                                title = stringResource(R.string.settings_theme),
-                                subtitle = stringResource(themeMode.labelRes()),
-                                onClick = { showThemeDialog = true },
-                            )
-                            SettingItem(
-                                title = stringResource(R.string.settings_liquid_glass),
-                                subtitle = stringResource(R.string.settings_liquid_glass_description),
-                                switch = liquidGlass to onLiquidGlassChange,
-                            )
+                        Box(Modifier.padding(horizontal = 16.dp)) {
+                            SettingGroup(title = stringResource(R.string.settings_section_style)) {
+                                SettingItem(
+                                    title = stringResource(R.string.settings_theme),
+                                    subtitle = stringResource(themeMode.labelRes()),
+                                    onClick = { showThemeDialog = true },
+                                )
+                                SettingItem(
+                                    title = stringResource(R.string.settings_liquid_glass),
+                                    subtitle = stringResource(R.string.settings_liquid_glass_description),
+                                    switch = liquidGlass to onLiquidGlassChange,
+                                )
+                            }
                         }
-                    }
-                }
-                item {
-                    Box(Modifier.padding(horizontal = 16.dp)) {
-                        SettingGroup(title = stringResource(R.string.settings_section_reader_loading)) {
-                            SettingItem(
-                                title = stringResource(R.string.settings_prefetch_pages),
-                                subtitle = stringResource(R.string.settings_prefetch_pages_summary, prefetchAhead),
-                                onClick = { showPrefetchDialog = true },
-                            )
-                            SettingItem(
-                                title = stringResource(R.string.settings_wifi_only_prefetch),
-                                subtitle = stringResource(R.string.settings_wifi_only_prefetch_description),
-                                switch = wifiOnlyPrefetch to onWifiOnlyPrefetchChange,
-                            )
-                            SettingItem(
-                                title = stringResource(R.string.settings_low_memory),
-                                subtitle = stringResource(R.string.settings_low_memory_description),
-                                switch =
-                                    lowMemory to { enabled ->
-                                        onLowMemoryChange(enabled)
-                                        scope.launch {
-                                            withContext(Dispatchers.IO) { AppGraph.pageStore.trimToLimit() }
-                                            cacheSize =
-                                                withContext(Dispatchers.IO) { AppGraph.readerCacheSizeBytes() }
-                                        }
-                                    },
-                            )
+                        Box(Modifier.padding(horizontal = 16.dp)) {
+                            SettingGroup(title = stringResource(R.string.settings_section_reader_loading)) {
+                                SettingItem(
+                                    title = stringResource(R.string.settings_prefetch_pages),
+                                    subtitle = stringResource(R.string.settings_prefetch_pages_summary, prefetchAhead),
+                                    onClick = { showPrefetchDialog = true },
+                                )
+                                SettingItem(
+                                    title = stringResource(R.string.settings_wifi_only_prefetch),
+                                    subtitle = stringResource(R.string.settings_wifi_only_prefetch_description),
+                                    switch = wifiOnlyPrefetch to onWifiOnlyPrefetchChange,
+                                )
+                                SettingItem(
+                                    title = stringResource(R.string.settings_low_memory),
+                                    subtitle = stringResource(R.string.settings_low_memory_description),
+                                    switch =
+                                        lowMemory to { enabled ->
+                                            onLowMemoryChange(enabled)
+                                            scope.launch {
+                                                withContext(Dispatchers.IO) { AppGraph.pageStore.trimToLimit() }
+                                                cacheSize =
+                                                    withContext(Dispatchers.IO) { AppGraph.readerCacheSizeBytes() }
+                                            }
+                                        },
+                                )
+                            }
                         }
                     }
                 }
