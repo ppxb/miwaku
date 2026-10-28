@@ -63,6 +63,9 @@ internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
     private val _nextChapter = MutableStateFlow<NextChapterState>(NextChapterState.Unknown)
     val nextChapter: StateFlow<NextChapterState> = _nextChapter.asStateFlow()
 
+    private val _previousChapter = MutableStateFlow<ChapterSummary?>(null)
+    val previousChapter: StateFlow<ChapterSummary?> = _previousChapter.asStateFlow()
+
     private var loadJob: Job? = null
     private var prefetcher: ReaderPrefetcher? = null
     private var detailJob: Job? = null
@@ -87,6 +90,7 @@ internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
         currentContent = null
         currentPage = initialPage
         _nextChapter.value = NextChapterState.Unknown
+        _previousChapter.value = null
         _failedPages.value = emptySet()
         ReaderPerf.log {
             "reader_load_start chapter=$chapterId page=$initialPage"
@@ -214,6 +218,7 @@ internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
                 ReaderPerf.log {
                     "next_resolve_missing chapter=$chapterId chapters=${detail.chapters.size}"
                 }
+                _previousChapter.value = null
                 _nextChapter.value =
                     if (detail.chapters.size <= 1) {
                         NextChapterState.None
@@ -222,6 +227,7 @@ internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
                     }
                 return@launch
             }
+            _previousChapter.value = detail.chapters.getOrNull(index - 1)
             val next = detail.chapters.getOrNull(index + 1)
             _nextChapter.value = if (next != null) NextChapterState.Next(next) else NextChapterState.None
             ReaderPerf.log {

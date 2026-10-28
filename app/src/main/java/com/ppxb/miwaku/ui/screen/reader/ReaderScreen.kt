@@ -4,6 +4,7 @@ import android.app.Activity
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -23,6 +24,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
@@ -34,6 +36,8 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.rounded.Toc
 import androidx.compose.material.icons.rounded.AutoStories
 import androidx.compose.material.icons.rounded.Settings
@@ -46,6 +50,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SecondaryTabRow
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
@@ -56,6 +61,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -86,7 +92,8 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
-import coil.compose.AsyncImage
+import coil.compose.AsyncImagePainter
+import coil.compose.rememberAsyncImagePainter
 import com.ppxb.miwaku.R
 import com.ppxb.miwaku.core.data.AppGraph
 import com.ppxb.miwaku.core.data.image.PageImage
@@ -108,6 +115,7 @@ import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
 import java.io.File
 import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 
 @Composable
@@ -139,6 +147,7 @@ internal fun ReaderScreen(
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var showChapters by rememberSaveable { mutableStateOf(false) }
     var readerPage by rememberSaveable { mutableIntStateOf(viewModel.initialPage) }
+    var pendingJump by remember { mutableStateOf<Int?>(null) }
     val modeOverrides by AppGraph.readerModes.modes.collectAsState()
     val defaultMode by AppGraph.settings.defaultReadingMode.collectAsState()
     val mode = modeOverrides[viewModel.albumId] ?: defaultMode
@@ -148,10 +157,32 @@ internal fun ReaderScreen(
     val pageSizes by viewModel.pageSizes.collectAsState()
     val failedPages by viewModel.failedPages.collectAsState()
     val nextChapter by viewModel.nextChapter.collectAsState()
+    val previousChapter by viewModel.previousChapter.collectAsState()
     val openNextChapter: () -> Unit = {
         val loaded = (state as? ReaderUiState.Content)?.content
         val next = (nextChapter as? NextChapterState.Next)?.chapter
         if (loaded != null && next != null) onNextChapter(loaded.albumId, next.id)
+    }
+    val openPreviousChapter: () -> Unit = {
+        val loaded = (state as? ReaderUiState.Content)?.content
+        val previous = previousChapter
+        if (loaded != null && previous != null) onNextChapter(loaded.albumId, previous.id)
+    }
+    // Warm the target page so seeking does not land on an empty placeholder.
+    val prefetchPage: (Int) -> Unit = { target ->
+        val loaded = (state as? ReaderUiState.Content)?.content
+        if (loaded != null && target in loaded.pages.indices) {
+            val page = loaded.pages[target]
+            viewModel.ensurePage(
+                PageImage(
+                    chapterId = loaded.chapterId,
+                    fileName = page.fileName.ifBlank { "page-$target" },
+                    index = target,
+                    splitCount = page.splitCount,
+                    url = page.url,
+                ),
+            )
+        }
     }
     val navigating = remember { mutableStateOf(false) }
     val currentContent = rememberUpdatedState(content)
@@ -239,6 +270,14 @@ internal fun ReaderScreen(
                 viewModel.recordPage(it)
             }
     }
+    // Paged modes consume the jump themselves; this only serves the webtoon list.
+    LaunchedEffect(pendingJump, mode) {
+        if (mode != ReadingMode.Webtoon) return@LaunchedEffect
+        val target = pendingJump ?: return@LaunchedEffect
+        val pages = content?.pages ?: return@LaunchedEffect
+        if (pages.isNotEmpty()) listState.scrollToItem(target.coerceIn(0, pages.lastIndex))
+        pendingJump = null
+    }
 
     Box(modifier.fillMaxSize()) {
         // Bars keep the app theme; everything under them follows the chosen reader background.
@@ -313,6 +352,8 @@ internal fun ReaderScreen(
                                 nextChapter = nextChapter,
                                 onRetryNext = viewModel::retryNextChapter,
                                 onOpenNextChapter = openNextChapter,
+                                jumpToPage = pendingJump,
+                                onJumpConsumed = { pendingJump = null },
                                 onBack = onBack,
                                 onTap = { controlsVisible = !controlsVisible },
                                 modifier = Modifier.fillMaxSize().hazeSource(hazeState),
@@ -340,14 +381,30 @@ internal fun ReaderScreen(
             enter = fadeIn(),
             exit = fadeOut(),
         ) {
-            ReaderBottomBar(
-                page = readerPage,
-                total = content?.pages?.size ?: 0,
-                showPageNumber = showPageNumber,
-                hazeState = hazeState,
-                onOpenChapters = { showChapters = true },
-                onOpenSettings = { showSettings = true },
-            )
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ReaderSeekBar(
+                    page = readerPage,
+                    total = content?.pages?.size ?: 0,
+                    showPageNumber = showPageNumber,
+                    canGoPrevious = previousChapter != null,
+                    canGoNext = nextChapter is NextChapterState.Next,
+                    onPreviousChapter = openPreviousChapter,
+                    onNextChapter = openNextChapter,
+                    onSeek = { target ->
+                        prefetchPage(target)
+                        pendingJump = target
+                    },
+                    hazeState = hazeState,
+                )
+                ReaderBottomBar(
+                    hazeState = hazeState,
+                    onOpenChapters = { showChapters = true },
+                    onOpenSettings = { showSettings = true },
+                )
+            }
         }
         // While the bars are hidden the page counter floats on its own, blurred over the page.
         AnimatedVisibility(
@@ -446,11 +503,103 @@ private fun ReaderTopBar(
     }
 }
 
+/**
+ * Page scrubber that floats above the control bar, matching the reference reader: previous
+ * chapter, page, slider, total, next chapter. Seeking applies while dragging.
+ */
 @Composable
-private fun ReaderBottomBar(
+private fun ReaderSeekBar(
     page: Int,
     total: Int,
     showPageNumber: Boolean,
+    canGoPrevious: Boolean,
+    canGoNext: Boolean,
+    onPreviousChapter: () -> Unit,
+    onNextChapter: () -> Unit,
+    onSeek: (Int) -> Unit,
+    hazeState: HazeState,
+) {
+    val lastIndex = (total - 1).coerceAtLeast(0)
+    var scrubbing by remember { mutableStateOf(false) }
+    var scrubValue by remember { mutableFloatStateOf(page.toFloat().coerceIn(0f, lastIndex.toFloat())) }
+    var lastRequested by remember { mutableIntStateOf(-1) }
+    val displayPage =
+        if (scrubbing) scrubValue.roundToInt().coerceIn(0, lastIndex) else page.coerceIn(0, lastIndex)
+
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .hazeBlur(HazeInput.Sources(hazeState), topBarBlurStyle(alpha = 0.9f, radius = 18.dp))
+                .padding(horizontal = 4.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = onPreviousChapter, enabled = canGoPrevious) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowLeft,
+                contentDescription = stringResource(R.string.reader_previous_chapter),
+                tint =
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                        alpha = if (canGoPrevious) 1f else 0.35f,
+                    ),
+            )
+        }
+        if (showPageNumber) {
+            Text(
+                text = (displayPage + 1).toString(),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.widthIn(min = 24.dp),
+            )
+        }
+        Slider(
+            value = if (scrubbing) scrubValue else displayPage.toFloat(),
+            onValueChange = { raw ->
+                scrubbing = true
+                scrubValue = raw
+                val target = raw.roundToInt().coerceIn(0, lastIndex)
+                if (target != lastRequested) {
+                    lastRequested = target
+                    onSeek(target)
+                }
+            },
+            onValueChangeFinished = {
+                scrubbing = false
+                val target = scrubValue.roundToInt().coerceIn(0, lastIndex)
+                if (target != lastRequested) onSeek(target)
+                lastRequested = -1
+            },
+            valueRange = 0f..lastIndex.toFloat(),
+            enabled = total > 1,
+            modifier = Modifier.weight(1f).padding(horizontal = 6.dp),
+        )
+        if (showPageNumber) {
+            Text(
+                text = total.toString(),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.widthIn(min = 24.dp),
+            )
+        }
+        IconButton(onClick = onNextChapter, enabled = canGoNext) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                contentDescription = stringResource(R.string.reader_next_chapter),
+                tint =
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                        alpha = if (canGoNext) 1f else 0.35f,
+                    ),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReaderBottomBar(
     hazeState: HazeState,
     onOpenChapters: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -461,38 +610,23 @@ private fun ReaderBottomBar(
                 .fillMaxWidth()
                 .hazeBlur(HazeInput.Sources(hazeState), topBarBlurStyle())
                 .navigationBarsPadding()
-                .padding(start = 20.dp, end = 8.dp, top = 2.dp, bottom = 2.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
+                .padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (showPageNumber) {
-            Text(
-                text = stringResource(
-                    R.string.reader_page_of,
-                    if (total > 0) page.coerceIn(0, total - 1) + 1 else 1,
-                    total,
-                ),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+        IconButton(onClick = onOpenChapters) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Rounded.Toc,
+                contentDescription = stringResource(R.string.reader_chapters),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-        } else {
-            Spacer(Modifier.width(0.dp))
         }
-        Row {
-            IconButton(onClick = onOpenChapters) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.Toc,
-                    contentDescription = stringResource(R.string.reader_chapters),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            IconButton(onClick = onOpenSettings) {
-                Icon(
-                    imageVector = Icons.Rounded.Settings,
-                    contentDescription = stringResource(R.string.reader_settings),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+        IconButton(onClick = onOpenSettings) {
+            Icon(
+                imageVector = Icons.Rounded.Settings,
+                contentDescription = stringResource(R.string.reader_settings),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -507,7 +641,7 @@ private fun ReaderPageIndicator(
     Box(Modifier.navigationBarsPadding().padding(bottom = 18.dp)) {
         Text(
             text = stringResource(
-                R.string.reader_page_of,
+                R.string.reader_page_compact,
                 if (total > 0) page.coerceIn(0, total - 1) + 1 else 1,
                 total,
             ),
@@ -633,29 +767,52 @@ private fun ReaderPageArtwork(
         remember(file, image, imageWidthPx, attempt) {
             file?.let { PageImageRequests.build(context, image, it, imageWidthPx, attempt) }
         }
+    val painter = rememberAsyncImagePainter(model = request)
+    val painterState = painter.state
+    var showSpinner by remember(request) { mutableStateOf(false) }
+
+    // The spinner follows the painter state, so it can never outlive a settled page.
+    LaunchedEffect(painterState) {
+        if (painterState is AsyncImagePainter.State.Loading) {
+            delay(180)
+            showSpinner = true
+        } else {
+            showSpinner = false
+        }
+    }
+    LaunchedEffect(painterState) {
+        when (painterState) {
+            is AsyncImagePainter.State.Success -> {
+                decodeFailed = false
+                ReaderPerf.log {
+                    "page_ready index=$index ms=${ReaderPerf.mark() - pageStarted}"
+                }
+            }
+            is AsyncImagePainter.State.Error -> {
+                decodeFailed = true
+                ReaderPerf.log { "page_decode_failed index=$index" }
+            }
+            else -> Unit
+        }
+    }
 
     Box(
         modifier =
             modifier
                 .clipToBounds()
-                .background(MaterialTheme.colorScheme.surfaceContainer),
+                // Match the canvas so a page that is still decoding does not flash a dark block.
+                .background(MaterialTheme.colorScheme.background),
     ) {
-        if (request != null) {
-            AsyncImage(
-                model = request,
-                contentDescription = stringResource(R.string.reader_page, index + 1),
-                contentScale = contentScale,
-                modifier = Modifier.fillMaxSize(),
-                onSuccess = {
-                    decodeFailed = false
-                    ReaderPerf.log {
-                        "page_ready index=$index ms=${ReaderPerf.mark() - pageStarted}"
-                    }
-                },
-                onError = {
-                    decodeFailed = true
-                    ReaderPerf.log { "page_decode_failed index=$index" }
-                },
+        Image(
+            painter = painter,
+            contentDescription = stringResource(R.string.reader_page, index + 1),
+            contentScale = contentScale,
+            modifier = Modifier.fillMaxSize(),
+        )
+        if (showSpinner && !failed && !decodeFailed) {
+            CircularProgressIndicator(
+                modifier = Modifier.align(Alignment.Center).size(28.dp),
+                strokeWidth = 2.dp,
             )
         }
         if (failed || decodeFailed) {
@@ -838,6 +995,8 @@ private fun PagedReader(
     nextChapter: NextChapterState,
     onRetryNext: () -> Unit,
     onOpenNextChapter: () -> Unit,
+    jumpToPage: Int?,
+    onJumpConsumed: () -> Unit,
     onBack: () -> Unit,
     onTap: () -> Unit,
     modifier: Modifier,
@@ -852,6 +1011,11 @@ private fun PagedReader(
         snapshotFlow { state.currentPage }
             .distinctUntilChanged()
             .collect { page -> if (page < pages.size) onPageChanged(page) }
+    }
+    LaunchedEffect(state, jumpToPage) {
+        val target = jumpToPage ?: return@LaunchedEffect
+        if (target in pages.indices) state.scrollToPage(target)
+        onJumpConsumed()
     }
 
     val pageContent: @Composable (Int) -> Unit = { index ->
