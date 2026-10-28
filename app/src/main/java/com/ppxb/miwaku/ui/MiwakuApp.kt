@@ -19,8 +19,6 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import com.ppxb.miwaku.core.data.settings.ReaderBackground
-import com.ppxb.miwaku.core.data.settings.ReadingMode
 import com.ppxb.miwaku.core.data.settings.ThemeMode
 import com.ppxb.miwaku.ui.component.AppBottomBar
 import com.ppxb.miwaku.ui.navigation.CategoryRoute
@@ -62,14 +60,7 @@ fun MiwakuApp(
     onLowMemoryChange: (Boolean) -> Unit,
     cacheLimitMb: Int,
     onCacheLimitMbChange: (Int) -> Unit,
-    readerBackground: ReaderBackground,
-    onReaderBackgroundChange: (ReaderBackground) -> Unit,
     keepScreenOn: Boolean,
-    onKeepScreenOnChange: (Boolean) -> Unit,
-    showPageNumber: Boolean,
-    onShowPageNumberChange: (Boolean) -> Unit,
-    defaultReadingMode: ReadingMode,
-    onDefaultReadingModeChange: (ReadingMode) -> Unit,
 ) {
     val navController = rememberNavController()
     val currentDestination by navController.currentBackStackEntryAsState()
@@ -170,14 +161,6 @@ fun MiwakuApp(
                     onLowMemoryChange = onLowMemoryChange,
                     cacheLimitMb = cacheLimitMb,
                     onCacheLimitMbChange = onCacheLimitMbChange,
-                    readerBackground = readerBackground,
-                    onReaderBackgroundChange = onReaderBackgroundChange,
-                    keepScreenOn = keepScreenOn,
-                    onKeepScreenOnChange = onKeepScreenOnChange,
-                    showPageNumber = showPageNumber,
-                    onShowPageNumberChange = onShowPageNumberChange,
-                    defaultReadingMode = defaultReadingMode,
-                    onDefaultReadingModeChange = onDefaultReadingModeChange,
                     onBack = { navController.popBackStack() },
                 )
             }

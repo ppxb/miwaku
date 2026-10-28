@@ -80,16 +80,12 @@
     <!-- Settings -->
     <string name="settings_title">设置</string>
     <string name="settings_section_reader_loading">阅读加载</string>
-    <string name="settings_section_reader_display">阅读界面</string>
     <string name="settings_reader_background">阅读背景</string>
     <string name="settings_reader_background_match_theme">跟随主题</string>
     <string name="settings_reader_background_black">纯黑</string>
     <string name="settings_reader_background_paper">纸白</string>
     <string name="settings_keep_screen_on">保持屏幕常亮</string>
-    <string name="settings_keep_screen_on_description">阅读时不让屏幕自动熄灭，退出阅读器后恢复</string>
     <string name="settings_show_page_number">显示页码</string>
-    <string name="settings_show_page_number_description">在阅读器底部显示当前页码</string>
-    <string name="settings_reader_mode">默认阅读模式</string>
     <string name="reader_mode_webtoon">条漫连续</string>
     <string name="reader_mode_ltr">左到右翻页</string>
     <string name="reader_mode_rtl">右到左翻页</string>
