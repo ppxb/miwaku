@@ -26,6 +26,10 @@ class MainActivity : ComponentActivity() {
             val wifiOnlyPrefetch by settings.wifiOnlyPrefetch.collectAsState()
             val lowMemory by settings.lowMemory.collectAsState()
             val cacheLimitMb by settings.readerCacheLimitMb.collectAsState()
+            val readerBackground by settings.readerBackground.collectAsState()
+            val keepScreenOn by settings.keepScreenOn.collectAsState()
+            val showPageNumber by settings.showPageNumber.collectAsState()
+            val defaultReadingMode by settings.defaultReadingMode.collectAsState()
             val darkTheme =
                 when (themeMode) {
                     ThemeMode.System -> isSystemInDarkTheme()
@@ -49,6 +53,14 @@ class MainActivity : ComponentActivity() {
                     onLowMemoryChange = settings::setLowMemory,
                     cacheLimitMb = cacheLimitMb,
                     onCacheLimitMbChange = settings::setReaderCacheLimitMb,
+                    readerBackground = readerBackground,
+                    onReaderBackgroundChange = settings::setReaderBackground,
+                    keepScreenOn = keepScreenOn,
+                    onKeepScreenOnChange = settings::setKeepScreenOn,
+                    showPageNumber = showPageNumber,
+                    onShowPageNumberChange = settings::setShowPageNumber,
+                    defaultReadingMode = defaultReadingMode,
+                    onDefaultReadingModeChange = settings::setDefaultReadingMode,
                 )
             }
         }

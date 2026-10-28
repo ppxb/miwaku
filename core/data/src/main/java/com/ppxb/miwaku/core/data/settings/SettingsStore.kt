@@ -36,6 +36,18 @@ class SettingsStore(context: Context) {
     private val _readerCacheLimitMb = MutableStateFlow(readCacheLimitMb())
     val readerCacheLimitMb: StateFlow<Int> = _readerCacheLimitMb.asStateFlow()
 
+    private val _readerBackground = MutableStateFlow(readReaderBackground())
+    val readerBackground: StateFlow<ReaderBackground> = _readerBackground.asStateFlow()
+
+    private val _keepScreenOn = MutableStateFlow(prefs.getBoolean(KEY_READER_KEEP_SCREEN_ON, false))
+    val keepScreenOn: StateFlow<Boolean> = _keepScreenOn.asStateFlow()
+
+    private val _showPageNumber = MutableStateFlow(prefs.getBoolean(KEY_READER_SHOW_PAGE_NUMBER, true))
+    val showPageNumber: StateFlow<Boolean> = _showPageNumber.asStateFlow()
+
+    private val _defaultReadingMode = MutableStateFlow(readReadingMode())
+    val defaultReadingMode: StateFlow<ReadingMode> = _defaultReadingMode.asStateFlow()
+
     fun setThemeMode(mode: ThemeMode) {
         _themeMode.value = mode
         prefs.edit { putString(KEY_THEME_MODE, mode.name) }
@@ -73,6 +85,26 @@ class SettingsStore(context: Context) {
         prefs.edit { putInt(KEY_CACHE_LIMIT_MB, safe) }
     }
 
+    fun setReaderBackground(background: ReaderBackground) {
+        _readerBackground.value = background
+        prefs.edit { putString(KEY_READER_BACKGROUND, background.name) }
+    }
+
+    fun setKeepScreenOn(enabled: Boolean) {
+        _keepScreenOn.value = enabled
+        prefs.edit { putBoolean(KEY_READER_KEEP_SCREEN_ON, enabled) }
+    }
+
+    fun setShowPageNumber(enabled: Boolean) {
+        _showPageNumber.value = enabled
+        prefs.edit { putBoolean(KEY_READER_SHOW_PAGE_NUMBER, enabled) }
+    }
+
+    fun setDefaultReadingMode(mode: ReadingMode) {
+        _defaultReadingMode.value = mode
+        prefs.edit { putString(KEY_READER_DEFAULT_MODE, mode.name) }
+    }
+
     private fun readCacheLimitMb(): Int =
         prefs.getInt(KEY_CACHE_LIMIT_MB, DEFAULT_CACHE_LIMIT_MB)
             .coerceIn(MIN_CACHE_LIMIT_MB, MAX_CACHE_LIMIT_MB)
@@ -86,6 +118,16 @@ class SettingsStore(context: Context) {
         return ThemeMode.entries.firstOrNull { it.name == stored } ?: ThemeMode.System
     }
 
+    private fun readReaderBackground(): ReaderBackground {
+        val stored = prefs.getString(KEY_READER_BACKGROUND, null) ?: return ReaderBackground.MatchTheme
+        return ReaderBackground.entries.firstOrNull { it.name == stored } ?: ReaderBackground.MatchTheme
+    }
+
+    private fun readReadingMode(): ReadingMode {
+        val stored = prefs.getString(KEY_READER_DEFAULT_MODE, null) ?: return ReadingMode.Webtoon
+        return ReadingMode.entries.firstOrNull { it.name == stored } ?: ReadingMode.Webtoon
+    }
+
     private companion object {
         const val KEY_THEME_MODE = "theme_mode"
         const val KEY_LIQUID_GLASS = "liquid_glass"
@@ -94,6 +136,10 @@ class SettingsStore(context: Context) {
         const val KEY_WIFI_ONLY_PREFETCH = "wifi_only_prefetch"
         const val KEY_LOW_MEMORY = "low_memory"
         const val KEY_CACHE_LIMIT_MB = "reader_cache_limit_mb"
+        const val KEY_READER_BACKGROUND = "reader_background"
+        const val KEY_READER_KEEP_SCREEN_ON = "reader_keep_screen_on"
+        const val KEY_READER_SHOW_PAGE_NUMBER = "reader_show_page_number"
+        const val KEY_READER_DEFAULT_MODE = "reader_default_mode"
         const val DEFAULT_PREFETCH_AHEAD = 6
         const val MIN_PREFETCH_AHEAD = 3
         const val MAX_PREFETCH_AHEAD = 10

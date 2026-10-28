@@ -10,13 +10,17 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalView
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.ppxb.miwaku.core.data.settings.ReaderBackground
+import com.ppxb.miwaku.core.data.settings.ReadingMode
 import com.ppxb.miwaku.core.data.settings.ThemeMode
 import com.ppxb.miwaku.ui.component.AppBottomBar
 import com.ppxb.miwaku.ui.navigation.CategoryRoute
@@ -58,6 +62,14 @@ fun MiwakuApp(
     onLowMemoryChange: (Boolean) -> Unit,
     cacheLimitMb: Int,
     onCacheLimitMbChange: (Int) -> Unit,
+    readerBackground: ReaderBackground,
+    onReaderBackgroundChange: (ReaderBackground) -> Unit,
+    keepScreenOn: Boolean,
+    onKeepScreenOnChange: (Boolean) -> Unit,
+    showPageNumber: Boolean,
+    onShowPageNumberChange: (Boolean) -> Unit,
+    defaultReadingMode: ReadingMode,
+    onDefaultReadingModeChange: (ReadingMode) -> Unit,
 ) {
     val navController = rememberNavController()
     val currentDestination by navController.currentBackStackEntryAsState()
@@ -75,6 +87,15 @@ fun MiwakuApp(
         !destination.isOn(SettingsRoute) &&
             !destination.isOn(DetailRoute::class) &&
             !destination.isOn(ReaderRoute::class)
+
+    // Owned here rather than by the reader screen: on a chapter replace the outgoing reader is
+    // disposed after the incoming one has already set the flag, which would clear it.
+    val inReader = destination.isOn(ReaderRoute::class)
+    val view = LocalView.current
+    DisposableEffect(view, inReader, keepScreenOn) {
+        view.keepScreenOn = inReader && keepScreenOn
+        onDispose { view.keepScreenOn = false }
+    }
 
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         NavHost(
@@ -149,6 +170,14 @@ fun MiwakuApp(
                     onLowMemoryChange = onLowMemoryChange,
                     cacheLimitMb = cacheLimitMb,
                     onCacheLimitMbChange = onCacheLimitMbChange,
+                    readerBackground = readerBackground,
+                    onReaderBackgroundChange = onReaderBackgroundChange,
+                    keepScreenOn = keepScreenOn,
+                    onKeepScreenOnChange = onKeepScreenOnChange,
+                    showPageNumber = showPageNumber,
+                    onShowPageNumberChange = onShowPageNumberChange,
+                    defaultReadingMode = defaultReadingMode,
+                    onDefaultReadingModeChange = onDefaultReadingModeChange,
                     onBack = { navController.popBackStack() },
                 )
             }

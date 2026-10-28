@@ -43,6 +43,7 @@ object AppGraph {
     val comics: ComicRepository by lazy { ComicRepository(apiClient, manifests, detailStore) }
     val history: HistoryStore by lazy { HistoryStore(appContext) }
     val progress: ProgressStore by lazy { ProgressStore(appContext) }
+    val readerModes: ReaderModeStore by lazy { ReaderModeStore(appContext) }
 
     fun isPrefetchAllowed(): Boolean =
         !settings.wifiOnlyPrefetch.value || isUnmetered()

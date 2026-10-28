@@ -57,10 +57,13 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.ppxb.miwaku.R
 import com.ppxb.miwaku.core.data.AppGraph
+import com.ppxb.miwaku.core.data.settings.ReaderBackground
+import com.ppxb.miwaku.core.data.settings.ReadingMode
 import com.ppxb.miwaku.core.data.settings.ThemeMode
 import com.ppxb.miwaku.ui.component.AmbientGlow
 import com.ppxb.miwaku.ui.component.SettingGroup
 import com.ppxb.miwaku.ui.component.SettingItem
+import com.ppxb.miwaku.ui.component.labelRes
 import com.ppxb.miwaku.ui.component.topBarBlurStyle
 import dev.chrisbanes.haze.HazeInput
 import dev.chrisbanes.haze.blur.hazeBlur
@@ -87,6 +90,14 @@ fun SettingsScreen(
     onLowMemoryChange: (Boolean) -> Unit,
     cacheLimitMb: Int,
     onCacheLimitMbChange: (Int) -> Unit,
+    readerBackground: ReaderBackground,
+    onReaderBackgroundChange: (ReaderBackground) -> Unit,
+    keepScreenOn: Boolean,
+    onKeepScreenOnChange: (Boolean) -> Unit,
+    showPageNumber: Boolean,
+    onShowPageNumberChange: (Boolean) -> Unit,
+    defaultReadingMode: ReadingMode,
+    onDefaultReadingModeChange: (ReadingMode) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -94,6 +105,8 @@ fun SettingsScreen(
     var showPrefetchDialog by rememberSaveable { mutableStateOf(false) }
     var showCacheLimitDialog by rememberSaveable { mutableStateOf(false) }
     var showClearCacheDialog by rememberSaveable { mutableStateOf(false) }
+    var showBackgroundDialog by rememberSaveable { mutableStateOf(false) }
+    var showModeDialog by rememberSaveable { mutableStateOf(false) }
     var cacheSize by remember { mutableStateOf<Long?>(null) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -179,7 +192,7 @@ fun SettingsScreen(
                 }
                 item {
                     Box(Modifier.padding(horizontal = 16.dp)) {
-                        SettingGroup(title = stringResource(R.string.settings_section_reader)) {
+                        SettingGroup(title = stringResource(R.string.settings_section_reader_loading)) {
                             SettingItem(
                                 title = stringResource(R.string.settings_prefetch_pages),
                                 subtitle = stringResource(R.string.settings_prefetch_pages_summary, prefetchAhead),
@@ -202,6 +215,32 @@ fun SettingsScreen(
                                                 withContext(Dispatchers.IO) { AppGraph.readerCacheSizeBytes() }
                                         }
                                     },
+                            )
+                        }
+                    }
+                }
+                item {
+                    Box(Modifier.padding(horizontal = 16.dp)) {
+                        SettingGroup(title = stringResource(R.string.settings_section_reader_display)) {
+                            SettingItem(
+                                title = stringResource(R.string.settings_reader_mode),
+                                subtitle = stringResource(defaultReadingMode.labelRes()),
+                                onClick = { showModeDialog = true },
+                            )
+                            SettingItem(
+                                title = stringResource(R.string.settings_reader_background),
+                                subtitle = stringResource(readerBackground.labelRes()),
+                                onClick = { showBackgroundDialog = true },
+                            )
+                            SettingItem(
+                                title = stringResource(R.string.settings_keep_screen_on),
+                                subtitle = stringResource(R.string.settings_keep_screen_on_description),
+                                switch = keepScreenOn to onKeepScreenOnChange,
+                            )
+                            SettingItem(
+                                title = stringResource(R.string.settings_show_page_number),
+                                subtitle = stringResource(R.string.settings_show_page_number_description),
+                                switch = showPageNumber to onShowPageNumberChange,
                             )
                         }
                     }
@@ -342,6 +381,26 @@ fun SettingsScreen(
             },
         )
     }
+    if (showBackgroundDialog) {
+        ReaderBackgroundDialog(
+            current = readerBackground,
+            onSelect = {
+                onReaderBackgroundChange(it)
+                showBackgroundDialog = false
+            },
+            onDismiss = { showBackgroundDialog = false },
+        )
+    }
+    if (showModeDialog) {
+        ReadingModeDialog(
+            current = defaultReadingMode,
+            onSelect = {
+                onDefaultReadingModeChange(it)
+                showModeDialog = false
+            },
+            onDismiss = { showModeDialog = false },
+        )
+    }
 }
 
 @StringRes
@@ -457,6 +516,92 @@ private fun ThemeDialog(
         text = {
             Column {
                 ThemeMode.entries.forEach { mode ->
+                    Row(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .selectable(
+                                    selected = mode == current,
+                                    role = Role.RadioButton,
+                                    onClick = { onSelect(mode) },
+                                ).padding(horizontal = 8.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = mode == current, onClick = null)
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            text = stringResource(mode.labelRes()),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        },
+    )
+}
+
+@Composable
+private fun ReaderBackgroundDialog(
+    current: ReaderBackground,
+    onSelect: (ReaderBackground) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.settings_reader_background)) },
+        text = {
+            Column {
+                ReaderBackground.entries.forEach { background ->
+                    Row(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .selectable(
+                                    selected = background == current,
+                                    role = Role.RadioButton,
+                                    onClick = { onSelect(background) },
+                                ).padding(horizontal = 8.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = background == current, onClick = null)
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            text = stringResource(background.labelRes()),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        },
+    )
+}
+
+@Composable
+private fun ReadingModeDialog(
+    current: ReadingMode,
+    onSelect: (ReadingMode) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.reader_mode_title)) },
+        text = {
+            Column {
+                ReadingMode.entries.forEach { mode ->
                     Row(
                         modifier =
                             Modifier

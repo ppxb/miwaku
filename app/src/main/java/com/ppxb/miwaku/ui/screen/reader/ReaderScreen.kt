@@ -5,6 +5,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -23,23 +25,36 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.VerticalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.Toc
 import androidx.compose.material.icons.rounded.AutoStories
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ColorScheme
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SecondaryTabRow
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -50,8 +65,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -62,6 +79,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
@@ -70,13 +88,18 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.ppxb.miwaku.R
+import com.ppxb.miwaku.core.data.AppGraph
 import com.ppxb.miwaku.core.data.image.PageImage
 import com.ppxb.miwaku.core.data.image.PageSize
 import com.ppxb.miwaku.core.data.image.ReaderPerf
+import com.ppxb.miwaku.core.data.settings.ReaderBackground
+import com.ppxb.miwaku.core.data.settings.ReadingMode
 import com.ppxb.miwaku.model.ChapterContent
+import com.ppxb.miwaku.model.ChapterSummary
 import com.ppxb.miwaku.reader.image.PageImageRequests
 import com.ppxb.miwaku.ui.component.EmptyState
 import com.ppxb.miwaku.ui.component.ErrorState
+import com.ppxb.miwaku.ui.component.labelRes
 import com.ppxb.miwaku.ui.component.topBarBlurStyle
 import dev.chrisbanes.haze.HazeInput
 import dev.chrisbanes.haze.HazeState
@@ -95,18 +118,41 @@ internal fun ReaderScreen(
     viewModel: ReaderViewModel = viewModel(),
 ) {
     val state by viewModel.state.collectAsState()
+    val readerBackground by AppGraph.settings.readerBackground.collectAsState()
+    val keepScreenOn by AppGraph.settings.keepScreenOn.collectAsState()
+    val showPageNumber by AppGraph.settings.showPageNumber.collectAsState()
+    val appColorScheme = MaterialTheme.colorScheme
+    // Keyed on the app scheme as well: black/paper reuse its non-colour tokens as the base.
+    val readerScheme = remember(readerBackground, appColorScheme) {
+        appColorScheme.readerColorScheme(readerBackground)
+    }
     val content = (state as? ReaderUiState.Content)?.content
+    // Detail owns the album name; the chapter payload name drifts per chapter.
+    val albumTitle by viewModel.albumTitle.collectAsState()
     val title =
-        content?.title?.ifBlank { stringResource(R.string.reader_title) }
-            ?: stringResource(R.string.reader_title)
+        albumTitle.ifBlank { content?.title.orEmpty() }.ifBlank {
+            stringResource(R.string.reader_title)
+        }
     val listState = rememberLazyListState()
     val hazeState = rememberHazeState()
     var controlsVisible by rememberSaveable { mutableStateOf(false) }
-    var initialScrollDone by rememberSaveable { mutableStateOf(false) }
-    val currentPage by remember { derivedStateOf { listState.firstVisibleItemIndex } }
+    var showSettings by rememberSaveable { mutableStateOf(false) }
+    var showChapters by rememberSaveable { mutableStateOf(false) }
+    var readerPage by rememberSaveable { mutableIntStateOf(viewModel.initialPage) }
+    val modeOverrides by AppGraph.readerModes.modes.collectAsState()
+    val defaultMode by AppGraph.settings.defaultReadingMode.collectAsState()
+    val mode = modeOverrides[viewModel.albumId] ?: defaultMode
+    val chapters by viewModel.chapters.collectAsState()
+    // Detail already fills in "第N话" when the source chapter name is empty.
+    val chapterName = chapters.firstOrNull { it.id == viewModel.chapterId }?.name.orEmpty()
     val pageSizes by viewModel.pageSizes.collectAsState()
     val failedPages by viewModel.failedPages.collectAsState()
     val nextChapter by viewModel.nextChapter.collectAsState()
+    val openNextChapter: () -> Unit = {
+        val loaded = (state as? ReaderUiState.Content)?.content
+        val next = (nextChapter as? NextChapterState.Next)?.chapter
+        if (loaded != null && next != null) onNextChapter(loaded.albumId, next.id)
+    }
     val navigating = remember { mutableStateOf(false) }
     val currentContent = rememberUpdatedState(content)
     val currentNextChapter = rememberUpdatedState(nextChapter)
@@ -178,71 +224,102 @@ internal fun ReaderScreen(
             }
         }
     }
-    LaunchedEffect(content) {
+    // Webtoon keeps its own scroll; paged modes report their page through onPageChanged.
+    LaunchedEffect(content?.chapterId, mode) {
+        if (mode != ReadingMode.Webtoon) return@LaunchedEffect
         val pages = content?.pages ?: return@LaunchedEffect
         if (pages.isEmpty()) return@LaunchedEffect
-        if (!initialScrollDone) {
-            initialScrollDone = true
-            val target = viewModel.initialPage.coerceIn(0, pages.lastIndex)
-            if (target > 0) listState.scrollToItem(target)
-        }
+        val target = readerPage.coerceIn(0, pages.lastIndex)
+        // A restored list already sits on the page; scrolling again would drop its inner offset.
+        if (listState.firstVisibleItemIndex != target) listState.scrollToItem(target)
         snapshotFlow { listState.firstVisibleItemIndex }
             .distinctUntilChanged()
-            .collect { viewModel.recordPage(it) }
-    }
-    DisposableEffect(listState) {
-        onDispose { viewModel.recordPage(listState.firstVisibleItemIndex) }
+            .collect {
+                readerPage = it
+                viewModel.recordPage(it)
+            }
     }
 
     Box(modifier.fillMaxSize()) {
-        when (val current = state) {
-            ReaderUiState.Loading ->
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator()
-                }
+        // Bars keep the app theme; everything under them follows the chosen reader background.
+        MaterialTheme(colorScheme = readerScheme) {
+            Box(Modifier.fillMaxSize().background(readerScheme.background)) {
+                when (val current = state) {
+                    ReaderUiState.Loading ->
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            CircularProgressIndicator()
+                        }
 
-            is ReaderUiState.Failed ->
-                ErrorState(
-                    message = current.message,
-                    onRetry = viewModel::load,
-                    modifier = Modifier.fillMaxSize(),
-                )
+                    is ReaderUiState.Failed ->
+                        ErrorState(
+                            message = current.message,
+                            onRetry = viewModel::load,
+                            modifier = Modifier.fillMaxSize(),
+                        )
 
-            is ReaderUiState.Content ->
-                if (current.content.pages.isEmpty()) {
-                    EmptyState(
-                        icon = Icons.Rounded.AutoStories,
-                        title = stringResource(R.string.reader_empty_title),
-                        description = stringResource(R.string.reader_empty_description),
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                } else {
-                    Box(Modifier.fillMaxSize().nestedScroll(overscrollConnection)) {
-                        ReaderPages(
-                            content = current.content,
-                            listState = listState,
-                            pageSizes = pageSizes,
-                            failedPages = failedPages,
-                            fallbackRatio = fallbackRatio,
-                            imageWidthPx = imageWidthPx,
-                            onFileOf = viewModel::fileOf,
-                            onRetry = viewModel::retry,
-                            nextChapter = nextChapter,
-                            onRetryNext = viewModel::retryNextChapter,
-                            onBack = onBack,
-                            modifier =
+                    is ReaderUiState.Content ->
+                        if (current.content.pages.isEmpty()) {
+                            EmptyState(
+                                icon = Icons.Rounded.AutoStories,
+                                title = stringResource(R.string.reader_empty_title),
+                                description = stringResource(R.string.reader_empty_description),
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        } else if (mode == ReadingMode.Webtoon) {
+                            Box(
                                 Modifier
                                     .fillMaxSize()
-                                    .pointerInput(Unit) {
-                                        detectTapGestures { controlsVisible = !controlsVisible }
-                                    }
-                                    .hazeSource(hazeState),
-                        )
-                    }
+                                    .nestedScroll(overscrollConnection),
+                            ) {
+                                ReaderPages(
+                                    content = current.content,
+                                    listState = listState,
+                                    pageSizes = pageSizes,
+                                    failedPages = failedPages,
+                                    fallbackRatio = fallbackRatio,
+                                    imageWidthPx = imageWidthPx,
+                                    onFileOf = viewModel::fileOf,
+                                    onRetry = viewModel::retry,
+                                    nextChapter = nextChapter,
+                                    onRetryNext = viewModel::retryNextChapter,
+                                    onOpenNextChapter = openNextChapter,
+                                    onBack = onBack,
+                                    modifier =
+                                        Modifier
+                                            .fillMaxSize()
+                                            .pointerInput(Unit) {
+                                                detectTapGestures { controlsVisible = !controlsVisible }
+                                            }
+                                            .hazeSource(hazeState),
+                                )
+                            }
+                        } else {
+                            PagedReader(
+                                content = current.content,
+                                mode = mode,
+                                startPage = readerPage,
+                                pageSizes = pageSizes,
+                                failedPages = failedPages,
+                                imageWidthPx = imageWidthPx,
+                                onFileOf = viewModel::fileOf,
+                                onRetry = viewModel::retry,
+                                onPageChanged = { page ->
+                                    readerPage = page
+                                    viewModel.recordPage(page)
+                                },
+                                nextChapter = nextChapter,
+                                onRetryNext = viewModel::retryNextChapter,
+                                onOpenNextChapter = openNextChapter,
+                                onBack = onBack,
+                                onTap = { controlsVisible = !controlsVisible },
+                                modifier = Modifier.fillMaxSize().hazeSource(hazeState),
+                            )
+                        }
                 }
+            }
         }
         AnimatedVisibility(
             visible = controlsVisible,
@@ -252,6 +329,7 @@ internal fun ReaderScreen(
         ) {
             ReaderTopBar(
                 title = title,
+                chapterName = chapterName,
                 hazeState = hazeState,
                 onBack = onBack,
             )
@@ -263,17 +341,64 @@ internal fun ReaderScreen(
             exit = fadeOut(),
         ) {
             ReaderBottomBar(
-                page = currentPage,
+                page = readerPage,
+                total = content?.pages?.size ?: 0,
+                showPageNumber = showPageNumber,
+                hazeState = hazeState,
+                onOpenChapters = { showChapters = true },
+                onOpenSettings = { showSettings = true },
+            )
+        }
+        // While the bars are hidden the page counter floats on its own, blurred over the page.
+        AnimatedVisibility(
+            visible = !controlsVisible && showPageNumber && content?.pages?.isNotEmpty() == true,
+            modifier = Modifier.align(Alignment.BottomCenter),
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
+            ReaderPageIndicator(
+                page = readerPage,
                 total = content?.pages?.size ?: 0,
                 hazeState = hazeState,
             )
         }
+    }
+    if (showSettings) {
+        ReaderSettingsSheet(
+            mode = mode,
+            defaultMode = defaultMode,
+            hasOverride = modeOverrides.containsKey(viewModel.albumId),
+            background = readerBackground,
+            keepScreenOn = keepScreenOn,
+            showPageNumber = showPageNumber,
+            onModeSelect = { selected ->
+                AppGraph.readerModes.setMode(viewModel.albumId, selected)
+            },
+            onBackgroundSelect = AppGraph.settings::setReaderBackground,
+            onKeepScreenOnChange = AppGraph.settings::setKeepScreenOn,
+            onShowPageNumberChange = AppGraph.settings::setShowPageNumber,
+            onDismiss = { showSettings = false },
+        )
+    }
+    if (showChapters) {
+        ReaderChapterSheet(
+            chapters = chapters,
+            currentChapterId = viewModel.chapterId,
+            onSelect = { chapter ->
+                showChapters = false
+                if (chapter.id != viewModel.chapterId) {
+                    onNextChapter(viewModel.albumId, chapter.id)
+                }
+            },
+            onDismiss = { showChapters = false },
+        )
     }
 }
 
 @Composable
 private fun ReaderTopBar(
     title: String,
+    chapterName: String,
     hazeState: HazeState,
     onBack: () -> Unit,
 ) {
@@ -288,8 +413,8 @@ private fun ReaderTopBar(
             modifier =
                 Modifier
                     .fillMaxWidth()
-                    .height(56.dp)
-                    .padding(start = 4.dp, end = 16.dp),
+                    .heightIn(min = 56.dp)
+                    .padding(start = 4.dp, end = 16.dp, top = 6.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = onBack) {
@@ -299,13 +424,24 @@ private fun ReaderTopBar(
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (chapterName.isNotBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = chapterName,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
         }
     }
 }
@@ -314,7 +450,10 @@ private fun ReaderTopBar(
 private fun ReaderBottomBar(
     page: Int,
     total: Int,
+    showPageNumber: Boolean,
     hazeState: HazeState,
+    onOpenChapters: () -> Unit,
+    onOpenSettings: () -> Unit,
 ) {
     Row(
         modifier =
@@ -322,18 +461,65 @@ private fun ReaderBottomBar(
                 .fillMaxWidth()
                 .hazeBlur(HazeInput.Sources(hazeState), topBarBlurStyle())
                 .navigationBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 12.dp),
+                .padding(start = 20.dp, end = 8.dp, top = 2.dp, bottom = 2.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (showPageNumber) {
+            Text(
+                text = stringResource(
+                    R.string.reader_page_of,
+                    if (total > 0) page.coerceIn(0, total - 1) + 1 else 1,
+                    total,
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Spacer(Modifier.width(0.dp))
+        }
+        Row {
+            IconButton(onClick = onOpenChapters) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Rounded.Toc,
+                    contentDescription = stringResource(R.string.reader_chapters),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            IconButton(onClick = onOpenSettings) {
+                Icon(
+                    imageVector = Icons.Rounded.Settings,
+                    contentDescription = stringResource(R.string.reader_settings),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/** Page counter that floats over the page while the bars are hidden. */
+@Composable
+private fun ReaderPageIndicator(
+    page: Int,
+    total: Int,
+    hazeState: HazeState,
+) {
+    Box(Modifier.navigationBarsPadding().padding(bottom = 18.dp)) {
         Text(
             text = stringResource(
                 R.string.reader_page_of,
                 if (total > 0) page.coerceIn(0, total - 1) + 1 else 1,
                 total,
             ),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier =
+                Modifier
+                    .clip(RoundedCornerShape(50))
+                    .hazeBlur(
+                        HazeInput.Sources(hazeState),
+                        topBarBlurStyle(alpha = 0.9f, radius = 18.dp),
+                    ).padding(horizontal = 14.dp, vertical = 6.dp),
         )
     }
 }
@@ -350,6 +536,7 @@ private fun ReaderPages(
     onRetry: (PageImage) -> Unit,
     nextChapter: NextChapterState,
     onRetryNext: () -> Unit,
+    onOpenNextChapter: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier,
 ) {
@@ -389,6 +576,7 @@ private fun ReaderPages(
                 state = nextChapter,
                 onRetry = onRetryNext,
                 onBack = onBack,
+                onOpenNext = onOpenNextChapter,
             )
         }
     }
@@ -405,6 +593,37 @@ private fun ReaderPageImage(
     fileOf: (PageImage) -> File?,
     retry: (PageImage) -> Unit,
 ) {
+    val ratio =
+        if (knownSize != null && knownSize.width > 0 && knownSize.height > 0) {
+            knownSize.width.toFloat() / knownSize.height
+        } else {
+            fallbackRatio
+        }
+    ReaderPageArtwork(
+        image = image,
+        index = index,
+        knownSize = knownSize,
+        failed = failed,
+        imageWidthPx = imageWidthPx,
+        contentScale = ContentScale.FillWidth,
+        modifier = Modifier.fillMaxWidth().aspectRatio(ratio),
+        fileOf = fileOf,
+        retry = retry,
+    )
+}
+
+@Composable
+private fun ReaderPageArtwork(
+    image: PageImage,
+    index: Int,
+    knownSize: PageSize?,
+    failed: Boolean,
+    imageWidthPx: Int,
+    contentScale: ContentScale,
+    modifier: Modifier,
+    fileOf: (PageImage) -> File?,
+    retry: (PageImage) -> Unit,
+) {
     val context = LocalContext.current
     var attempt by remember { mutableIntStateOf(0) }
     var decodeFailed by remember { mutableStateOf(false) }
@@ -414,18 +633,10 @@ private fun ReaderPageImage(
         remember(file, image, imageWidthPx, attempt) {
             file?.let { PageImageRequests.build(context, image, it, imageWidthPx, attempt) }
         }
-    val ratio =
-        if (knownSize != null && knownSize.width > 0 && knownSize.height > 0) {
-            knownSize.width.toFloat() / knownSize.height
-        } else {
-            fallbackRatio
-        }
 
     Box(
         modifier =
-            Modifier
-                .fillMaxWidth()
-                .aspectRatio(ratio)
+            modifier
                 .clipToBounds()
                 .background(MaterialTheme.colorScheme.surfaceContainer),
     ) {
@@ -433,7 +644,7 @@ private fun ReaderPageImage(
             AsyncImage(
                 model = request,
                 contentDescription = stringResource(R.string.reader_page, index + 1),
-                contentScale = ContentScale.FillWidth,
+                contentScale = contentScale,
                 modifier = Modifier.fillMaxSize(),
                 onSuccess = {
                     decodeFailed = false
@@ -476,6 +687,7 @@ private fun ReaderFooter(
     state: NextChapterState,
     onRetry: () -> Unit,
     onBack: () -> Unit,
+    onOpenNext: () -> Unit,
 ) {
     Column(
         modifier =
@@ -522,7 +734,7 @@ private fun ReaderFooter(
 
             is NextChapterState.Next -> {
                 Text(
-                    text = stringResource(R.string.reader_scroll_to_next),
+                    text = stringResource(R.string.reader_next_up),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -532,6 +744,10 @@ private fun ReaderFooter(
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
+                Spacer(Modifier.height(8.dp))
+                TextButton(onClick = onOpenNext) {
+                    Text(stringResource(R.string.reader_open_next))
+                }
             }
         }
     }
@@ -552,5 +768,473 @@ private fun medianPageRatio(sizes: Collection<PageSize>): Float {
     return ratios[ratios.size / 2]
 }
 
+/**
+ * Reader-local colors. The bars stay on the app theme, so only the page canvas and whatever is
+ * painted on it gets re-tinted; without this, a fixed canvas would keep theme text that can
+ * vanish on it (dark theme + paper, light theme + black).
+ */
+private fun ColorScheme.readerColorScheme(background: ReaderBackground): ColorScheme =
+    when (background) {
+        ReaderBackground.MatchTheme -> this
+        ReaderBackground.Black ->
+            copy(
+                background = BlackCanvas,
+                onBackground = BlackInk,
+                surface = BlackCanvas,
+                onSurface = BlackInk,
+                surfaceVariant = BlackContainer,
+                onSurfaceVariant = BlackInkVariant,
+                surfaceContainer = BlackContainer,
+                primary = BlackInk,
+                onPrimary = BlackCanvas,
+                primaryContainer = BlackContainer,
+                onPrimaryContainer = BlackInk,
+                outlineVariant = BlackOutline,
+            )
+        ReaderBackground.Paper ->
+            copy(
+                background = PaperCanvas,
+                onBackground = PaperInk,
+                surface = PaperCanvas,
+                onSurface = PaperInk,
+                surfaceVariant = PaperContainer,
+                onSurfaceVariant = PaperInkVariant,
+                surfaceContainer = PaperContainer,
+                primary = PaperAccent,
+                onPrimary = PaperCanvas,
+                primaryContainer = PaperContainer,
+                onPrimaryContainer = PaperInk,
+                outlineVariant = PaperOutline,
+            )
+    }
+
+private val BlackCanvas = Color.Black
+private val BlackContainer = Color(0xFF171717)
+private val BlackInk = Color(0xFFEDEDED)
+private val BlackInkVariant = Color(0xFFB4B4B4)
+private val BlackOutline = Color(0xFF2E2E2E)
+
+private val PaperCanvas = Color(0xFFF4EDE1)
+private val PaperContainer = Color(0xFFE7DDCB)
+private val PaperInk = Color(0xFF2A241C)
+private val PaperInkVariant = Color(0xFF5C5344)
+private val PaperAccent = Color(0xFF6B4A2B)
+private val PaperOutline = Color(0xFFD5C9B4)
+
 private const val DEFAULT_PAGE_RATIO = 3f / 4f
 private const val MIN_RATIO_SAMPLES = 3
+
+@Composable
+private fun PagedReader(
+    content: ChapterContent,
+    mode: ReadingMode,
+    startPage: Int,
+    pageSizes: Map<String, PageSize>,
+    failedPages: Set<String>,
+    imageWidthPx: Int,
+    onFileOf: (PageImage) -> File?,
+    onRetry: (PageImage) -> Unit,
+    onPageChanged: (Int) -> Unit,
+    nextChapter: NextChapterState,
+    onRetryNext: () -> Unit,
+    onOpenNextChapter: () -> Unit,
+    onBack: () -> Unit,
+    onTap: () -> Unit,
+    modifier: Modifier,
+) {
+    val pages = content.pages
+    val state = rememberPagerState(
+        initialPage = startPage.coerceIn(0, pages.lastIndex),
+    ) { pages.size + 1 }
+    val pagerModifier = modifier.pointerInput(Unit) { detectTapGestures { onTap() } }
+
+    LaunchedEffect(state) {
+        snapshotFlow { state.currentPage }
+            .distinctUntilChanged()
+            .collect { page -> if (page < pages.size) onPageChanged(page) }
+    }
+
+    val pageContent: @Composable (Int) -> Unit = { index ->
+        if (index < pages.size) {
+            PagedPage(
+                index = index,
+                content = content,
+                pageSizes = pageSizes,
+                failedPages = failedPages,
+                imageWidthPx = imageWidthPx,
+                onFileOf = onFileOf,
+                onRetry = onRetry,
+            )
+        } else {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                ReaderFooter(
+                    state = nextChapter,
+                    onRetry = onRetryNext,
+                    onBack = onBack,
+                    onOpenNext = onOpenNextChapter,
+                )
+            }
+        }
+    }
+
+    if (mode == ReadingMode.VerticalPager) {
+        VerticalPager(state = state, modifier = pagerModifier, key = { it }) { index ->
+            pageContent(index)
+        }
+    } else {
+        HorizontalPager(
+            state = state,
+            modifier = pagerModifier,
+            reverseLayout = mode == ReadingMode.PagedRightToLeft,
+            key = { it },
+        ) { index ->
+            pageContent(index)
+        }
+    }
+}
+
+@Composable
+private fun PagedPage(
+    index: Int,
+    content: ChapterContent,
+    pageSizes: Map<String, PageSize>,
+    failedPages: Set<String>,
+    imageWidthPx: Int,
+    onFileOf: (PageImage) -> File?,
+    onRetry: (PageImage) -> Unit,
+) {
+    val page = content.pages[index]
+    val image =
+        remember(content.chapterId, page.url, page.fileName, page.splitCount, index) {
+            PageImage(
+                chapterId = content.chapterId,
+                fileName = page.fileName.ifBlank { "page-$index" },
+                index = index,
+                splitCount = page.splitCount,
+                url = page.url,
+            )
+        }
+    ReaderPageArtwork(
+        image = image,
+        index = index,
+        knownSize = pageSizes[image.cacheKey],
+        failed = image.cacheKey in failedPages,
+        imageWidthPx = imageWidthPx,
+        contentScale = ContentScale.Fit,
+        modifier = Modifier.fillMaxSize(),
+        fileOf = onFileOf,
+        retry = onRetry,
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ReaderSettingsSheet(
+    mode: ReadingMode,
+    defaultMode: ReadingMode,
+    hasOverride: Boolean,
+    background: ReaderBackground,
+    keepScreenOn: Boolean,
+    showPageNumber: Boolean,
+    onModeSelect: (ReadingMode?) -> Unit,
+    onBackgroundSelect: (ReaderBackground) -> Unit,
+    onKeepScreenOnChange: (Boolean) -> Unit,
+    onShowPageNumberChange: (Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var tab by rememberSaveable { mutableIntStateOf(0) }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+    ) {
+        Column(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 24.dp),
+        ) {
+            Text(
+                text = stringResource(R.string.reader_settings),
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Spacer(Modifier.height(12.dp))
+            SecondaryTabRow(selectedTabIndex = tab, containerColor = Color.Transparent) {
+                Tab(
+                    selected = tab == 0,
+                    onClick = { tab = 0 },
+                    text = { Text(stringResource(R.string.reader_settings_tab_reading)) },
+                )
+                Tab(
+                    selected = tab == 1,
+                    onClick = { tab = 1 },
+                    text = { Text(stringResource(R.string.reader_settings_tab_display)) },
+                )
+            }
+            Spacer(Modifier.height(18.dp))
+            if (tab == 0) {
+                ReaderReadingSettings(
+                    mode = mode,
+                    defaultMode = defaultMode,
+                    hasOverride = hasOverride,
+                    background = background,
+                    onModeSelect = onModeSelect,
+                    onBackgroundSelect = onBackgroundSelect,
+                )
+            } else {
+                ReaderSettingSwitchRow(
+                    title = stringResource(R.string.settings_keep_screen_on),
+                    checked = keepScreenOn,
+                    onCheckedChange = onKeepScreenOnChange,
+                )
+                ReaderSettingSwitchRow(
+                    title = stringResource(R.string.settings_show_page_number),
+                    checked = showPageNumber,
+                    onCheckedChange = onShowPageNumberChange,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReaderReadingSettings(
+    mode: ReadingMode,
+    defaultMode: ReadingMode,
+    hasOverride: Boolean,
+    background: ReaderBackground,
+    onModeSelect: (ReadingMode?) -> Unit,
+    onBackgroundSelect: (ReaderBackground) -> Unit,
+) {
+    ReaderSettingsSection(title = stringResource(R.string.reader_mode_title))
+    ReaderModeTile(
+        mode = null,
+        defaultMode = defaultMode,
+        selected = !hasOverride,
+        onClick = { onModeSelect(null) },
+        modifier = Modifier.fillMaxWidth(),
+    )
+    Spacer(Modifier.height(8.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        ReaderModeTile(
+            mode = ReadingMode.Webtoon,
+            defaultMode = defaultMode,
+            selected = hasOverride && mode == ReadingMode.Webtoon,
+            onClick = { onModeSelect(ReadingMode.Webtoon) },
+            modifier = Modifier.weight(1f),
+        )
+        ReaderModeTile(
+            mode = ReadingMode.PagedLeftToRight,
+            defaultMode = defaultMode,
+            selected = hasOverride && mode == ReadingMode.PagedLeftToRight,
+            onClick = { onModeSelect(ReadingMode.PagedLeftToRight) },
+            modifier = Modifier.weight(1f),
+        )
+    }
+    Spacer(Modifier.height(8.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        ReaderModeTile(
+            mode = ReadingMode.PagedRightToLeft,
+            defaultMode = defaultMode,
+            selected = hasOverride && mode == ReadingMode.PagedRightToLeft,
+            onClick = { onModeSelect(ReadingMode.PagedRightToLeft) },
+            modifier = Modifier.weight(1f),
+        )
+        ReaderModeTile(
+            mode = ReadingMode.VerticalPager,
+            defaultMode = defaultMode,
+            selected = hasOverride && mode == ReadingMode.VerticalPager,
+            onClick = { onModeSelect(ReadingMode.VerticalPager) },
+            modifier = Modifier.weight(1f),
+        )
+    }
+    Spacer(Modifier.height(20.dp))
+    ReaderSettingsSection(title = stringResource(R.string.settings_reader_background))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        ReaderBackground.entries.forEach { option ->
+            ReaderBackgroundTile(
+                background = option,
+                selected = option == background,
+                onClick = { onBackgroundSelect(option) },
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReaderSettingsSection(title: String) {
+    Text(
+        text = title,
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(start = 4.dp, bottom = 8.dp),
+    )
+}
+
+@Composable
+private fun ReaderModeTile(
+    mode: ReadingMode?,
+    defaultMode: ReadingMode,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val label =
+        if (mode == null) {
+            stringResource(R.string.reader_mode_follow_default, stringResource(defaultMode.labelRes()))
+        } else {
+            stringResource(mode.labelRes())
+        }
+    ReaderOptionTile(label = label, selected = selected, onClick = onClick, modifier = modifier)
+}
+
+@Composable
+private fun ReaderBackgroundTile(
+    background: ReaderBackground,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    ReaderOptionTile(
+        label = stringResource(background.labelRes()),
+        selected = selected,
+        onClick = onClick,
+        modifier = modifier,
+    )
+}
+
+@Composable
+private fun ReaderOptionTile(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier =
+            modifier
+                .height(52.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(
+                    if (selected) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainerHighest
+                    },
+                ).clickable(onClick = onClick)
+                .padding(horizontal = 12.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color =
+                if (selected) {
+                    MaterialTheme.colorScheme.onPrimaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                },
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+@Composable
+private fun ReaderSettingSwitchRow(
+    title: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f),
+        )
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ReaderChapterSheet(
+    chapters: List<ChapterSummary>,
+    currentChapterId: String,
+    onSelect: (ChapterSummary) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val currentIndex =
+        remember(chapters, currentChapterId) {
+            chapters.indexOfFirst { it.id == currentChapterId }.coerceAtLeast(0)
+        }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+            Text(
+                text = stringResource(R.string.reader_chapters),
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+            )
+            if (chapters.isEmpty()) {
+                Text(
+                    text = stringResource(R.string.reader_chapters_loading),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+                )
+            } else {
+                LazyColumn(
+                    state = rememberLazyListState(initialFirstVisibleItemIndex = currentIndex),
+                    // Keep the sheet around the same height as the settings panel instead of
+                    // swallowing the whole reader.
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 375.dp),
+                ) {
+                    items(chapters, key = { it.id }) { chapter ->
+                        val selected = chapter.id == currentChapterId
+                        Row(
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onSelect(chapter) }
+                                    .padding(horizontal = 24.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = chapter.name,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color =
+                                    if (selected) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    },
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (selected) {
+                                Text(
+                                    text = stringResource(R.string.reader_chapters_current),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

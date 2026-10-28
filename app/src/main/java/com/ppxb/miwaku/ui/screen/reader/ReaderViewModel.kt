@@ -38,12 +38,22 @@ internal sealed interface NextChapterState {
 }
 
 internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel() {
-    private val albumId: String = checkNotNull(savedStateHandle.get<String>("albumId"))
-    private val chapterId: String = checkNotNull(savedStateHandle.get<String>("chapterId"))
+    val albumId: String = checkNotNull(savedStateHandle.get<String>("albumId"))
+    val chapterId: String = checkNotNull(savedStateHandle.get<String>("chapterId"))
     val initialPage: Int = savedStateHandle.get<Int>("page") ?: 0
 
     private val _state = MutableStateFlow<ReaderUiState>(ReaderUiState.Loading)
     val state: StateFlow<ReaderUiState> = _state.asStateFlow()
+
+    private val _chapters = MutableStateFlow<List<ChapterSummary>>(emptyList())
+    val chapters: StateFlow<List<ChapterSummary>> = _chapters.asStateFlow()
+
+    /**
+     * Album title from the detail endpoint. The `/chapter` payload carries its own `name`, but the
+     * source fills that per chapter (short name plus volume number), so the header prefers this.
+     */
+    private val _albumTitle = MutableStateFlow("")
+    val albumTitle: StateFlow<String> = _albumTitle.asStateFlow()
 
     val pageSizes: StateFlow<Map<String, PageSize>> = AppGraph.pageStore.sizes
 
@@ -197,6 +207,8 @@ internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
                 ReaderPerf.log { "next_resolve_failed chapter=$chapterId" }
                 return@launch
             }
+            _chapters.value = detail.chapters
+            _albumTitle.value = detail.title
             val index = detail.chapters.indexOfFirst { it.id == chapterId }
             if (index < 0) {
                 ReaderPerf.log {
