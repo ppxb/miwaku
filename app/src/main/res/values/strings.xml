@@ -71,7 +71,7 @@
     <string name="reader_next_chapter">下一章</string>
     <string name="reader_open_next">阅读下一章</string>
     <string name="reader_mode_title">阅读模式</string>
-    <string name="reader_mode_follow_default">跟随默认（%1$s）</string>
+    <string name="reader_mode_follow_default">默认（%1$s）</string>
     <string name="reader_chapters">章节列表</string>
     <string name="reader_chapters_loading">章节列表还在加载</string>
     <string name="reader_chapters_current">当前</string>
@@ -88,10 +88,10 @@
     <string name="settings_reader_background_paper">纸白</string>
     <string name="settings_keep_screen_on">保持屏幕常亮</string>
     <string name="settings_show_page_number">显示页码</string>
-    <string name="reader_mode_webtoon">条漫连续</string>
-    <string name="reader_mode_ltr">左到右翻页</string>
-    <string name="reader_mode_rtl">右到左翻页</string>
-    <string name="reader_mode_vertical">上下翻页</string>
+    <string name="reader_mode_webtoon">条漫</string>
+    <string name="reader_mode_ltr">单页式（从左到右）</string>
+    <string name="reader_mode_rtl">单页式（从右到左）</string>
+    <string name="reader_mode_vertical">单页式（从上到下）</string>
     <string name="settings_prefetch_pages">预取页数</string>
     <string name="settings_prefetch_pages_summary">向前 %1$d 页（另保留后方 2 页）</string>
     <string name="settings_prefetch_pages_option">%1$d 页</string>

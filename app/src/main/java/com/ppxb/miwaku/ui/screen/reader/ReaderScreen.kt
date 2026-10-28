@@ -7,6 +7,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -65,6 +66,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -117,6 +119,7 @@ import java.io.File
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 
 @Composable
 internal fun ReaderScreen(
@@ -148,6 +151,7 @@ internal fun ReaderScreen(
     var showChapters by rememberSaveable { mutableStateOf(false) }
     var readerPage by rememberSaveable { mutableIntStateOf(viewModel.initialPage) }
     var pendingJump by remember { mutableStateOf<Int?>(null) }
+    val scope = rememberCoroutineScope()
     val modeOverrides by AppGraph.readerModes.modes.collectAsState()
     val defaultMode by AppGraph.settings.defaultReadingMode.collectAsState()
     val mode = modeOverrides[viewModel.albumId] ?: defaultMode
@@ -330,7 +334,28 @@ internal fun ReaderScreen(
                                         Modifier
                                             .fillMaxSize()
                                             .pointerInput(Unit) {
-                                                detectTapGestures { controlsVisible = !controlsVisible }
+                                                detectTapGestures { offset ->
+                                                    val width = size.width.toFloat()
+                                                    val height = size.height.toFloat()
+                                                    val middleBand = offset.y < height * 2f / 3f
+                                                    val previous =
+                                                        offset.y < height / 3f ||
+                                                            (middleBand && offset.x < width / 3f)
+                                                    val next =
+                                                        offset.y > height * 2f / 3f ||
+                                                            (middleBand && offset.x > width * 2f / 3f)
+                                                    when {
+                                                        previous ->
+                                                            scope.launch {
+                                                                listState.animateScrollBy(-height * 0.85f)
+                                                            }
+                                                        next ->
+                                                            scope.launch {
+                                                                listState.animateScrollBy(height * 0.85f)
+                                                            }
+                                                        else -> controlsVisible = !controlsVisible
+                                                    }
+                                                }
                                             }
                                             .hazeSource(hazeState),
                                 )
@@ -355,7 +380,7 @@ internal fun ReaderScreen(
                                 jumpToPage = pendingJump,
                                 onJumpConsumed = { pendingJump = null },
                                 onBack = onBack,
-                                onTap = { controlsVisible = !controlsVisible },
+                                onToggleMenu = { controlsVisible = !controlsVisible },
                                 modifier = Modifier.fillMaxSize().hazeSource(hazeState),
                             )
                         }
@@ -998,14 +1023,42 @@ private fun PagedReader(
     jumpToPage: Int?,
     onJumpConsumed: () -> Unit,
     onBack: () -> Unit,
-    onTap: () -> Unit,
+    onToggleMenu: () -> Unit,
     modifier: Modifier,
 ) {
     val pages = content.pages
     val state = rememberPagerState(
         initialPage = startPage.coerceIn(0, pages.lastIndex),
     ) { pages.size + 1 }
-    val pagerModifier = modifier.pointerInput(Unit) { detectTapGestures { onTap() } }
+    val scope = rememberCoroutineScope()
+    val rightToLeft = mode == ReadingMode.PagedRightToLeft
+    // Tap zones mirror the reference reader: thirds turn the page, the middle opens the menu.
+    val pagerModifier =
+        modifier.pointerInput(mode) {
+            detectTapGestures { offset ->
+                val width = size.width.toFloat()
+                val height = size.height.toFloat()
+                fun turn(target: Int) {
+                    scope.launch {
+                        state.animateScrollToPage(target.coerceIn(0, pages.lastIndex))
+                    }
+                }
+                when (mode) {
+                    ReadingMode.VerticalPager ->
+                        when {
+                            offset.y < height / 3f -> turn(state.currentPage - 1)
+                            offset.y > height * 2f / 3f -> turn(state.currentPage + 1)
+                            else -> onToggleMenu()
+                        }
+                    else ->
+                        when {
+                            offset.x < width / 3f -> turn(state.currentPage + if (rightToLeft) 1 else -1)
+                            offset.x > width * 2f / 3f -> turn(state.currentPage + if (rightToLeft) -1 else 1)
+                            else -> onToggleMenu()
+                        }
+                }
+            }
+        }
 
     LaunchedEffect(state) {
         snapshotFlow { state.currentPage }
