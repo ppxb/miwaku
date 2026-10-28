@@ -62,6 +62,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -75,11 +76,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
@@ -103,7 +100,7 @@ import com.ppxb.miwaku.core.data.image.PageSize
 import com.ppxb.miwaku.core.data.image.ReaderPerf
 import com.ppxb.miwaku.core.data.settings.ReaderBackground
 import com.ppxb.miwaku.core.data.settings.ReadingMode
-import com.ppxb.miwaku.model.ChapterContent
+import com.ppxb.miwaku.model.ReaderPage
 import com.ppxb.miwaku.model.ChapterSummary
 import com.ppxb.miwaku.reader.image.PageImageRequests
 import com.ppxb.miwaku.ui.component.EmptyState
@@ -124,7 +121,6 @@ import kotlinx.coroutines.launch
 @Composable
 internal fun ReaderScreen(
     onBack: () -> Unit,
-    onNextChapter: (albumId: String, chapterId: String) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: ReaderViewModel = viewModel(),
 ) {
@@ -137,11 +133,12 @@ internal fun ReaderScreen(
     val readerScheme = remember(readerBackground, appColorScheme) {
         appColorScheme.readerColorScheme(readerBackground)
     }
-    val content = (state as? ReaderUiState.Content)?.content
+    val readerWindow = (state as? ReaderUiState.Content)?.window
+    val activeChapter = readerWindow?.active
     // Detail owns the album name; the chapter payload name drifts per chapter.
     val albumTitle by viewModel.albumTitle.collectAsState()
     val title =
-        albumTitle.ifBlank { content?.title.orEmpty() }.ifBlank {
+        albumTitle.ifBlank { activeChapter?.title.orEmpty() }.ifBlank {
             stringResource(R.string.reader_title)
         }
     val listState = rememberLazyListState()
@@ -149,86 +146,126 @@ internal fun ReaderScreen(
     var controlsVisible by rememberSaveable { mutableStateOf(false) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var showChapters by rememberSaveable { mutableStateOf(false) }
-    var readerPage by rememberSaveable { mutableIntStateOf(viewModel.initialPage) }
+    val windowId = readerWindow?.id
+    // The window stores consecutive chapters; pages are addressed by their global index.
+    val slices =
+        remember(readerWindow?.chapters) {
+            readerWindow?.chapters?.flatMap { chapter ->
+                chapter.pages.mapIndexed { index, page -> ReaderSlice(chapter.chapterId, index, page) }
+            } ?: emptyList()
+        }
+    val chapterEnds =
+        remember(readerWindow?.chapters) {
+            var running = 0
+            readerWindow?.chapters?.map { chapter ->
+                running += chapter.pages.size
+                running
+            } ?: emptyList()
+        }
+    val activeIndex = readerWindow?.activeIndex ?: 0
+    val activeStart = if (activeIndex == 0) 0 else chapterEnds.getOrElse(activeIndex - 1) { 0 }
+    val activePageCount = activeChapter?.pages?.size ?: 0
+    val initialGlobal =
+        remember(windowId) {
+            val window = readerWindow
+            if (window == null || window.chapters.isEmpty()) {
+                0
+            } else {
+                val first = window.chapters.first()
+                if (viewModel.startPage < 0) {
+                    first.pages.lastIndex.coerceAtLeast(0)
+                } else {
+                    viewModel.startPage.coerceIn(0, first.pages.lastIndex.coerceAtLeast(0))
+                }
+            }
+        }
+    var readerPage by rememberSaveable(windowId) { mutableIntStateOf(initialGlobal) }
+    val localPage =
+        if (activePageCount == 0) 0 else (readerPage - activeStart).coerceIn(0, activePageCount - 1)
     var pendingJump by remember { mutableStateOf<Int?>(null) }
     val scope = rememberCoroutineScope()
     val modeOverrides by AppGraph.readerModes.modes.collectAsState()
     val defaultMode by AppGraph.settings.defaultReadingMode.collectAsState()
     val mode = modeOverrides[viewModel.albumId] ?: defaultMode
     val chapters by viewModel.chapters.collectAsState()
+    val chapterNames =
+        remember(chapters) {
+            chapters.associate { it.id to it.name }
+        }
+    // Pages plus a centered divider wherever one chapter ends and the next one begins.
+    val items =
+        remember(readerWindow?.chapters, chapterNames) {
+            val built = ArrayList<ReaderItem>()
+            var page = 0
+            readerWindow?.chapters?.forEachIndexed { index, chapter ->
+                chapter.pages.forEachIndexed { indexInChapter, pageItem ->
+                    built +=
+                        ReaderItem.Page(
+                            ReaderSlice(chapter.chapterId, indexInChapter, pageItem),
+                            page,
+                        )
+                    page++
+                }
+                val next = readerWindow.chapters.getOrNull(index + 1)
+                if (next != null) {
+                    built +=
+                        ReaderItem.Transition(
+                            from = chapterNames[chapter.chapterId] ?: chapter.title,
+                            to = chapterNames[next.chapterId] ?: next.title,
+                            pageIndex = (page - 1).coerceAtLeast(0),
+                        )
+                }
+            }
+            built
+        }
+    val itemOfPage =
+        remember(items, slices.size) {
+            val map = IntArray(slices.size) { 0 }
+            items.forEachIndexed { itemIndex, item ->
+                if (item is ReaderItem.Page && item.pageIndex in map.indices) {
+                    map[item.pageIndex] = itemIndex
+                }
+            }
+            map
+        }
     // Detail already fills in "第N话" when the source chapter name is empty.
-    val chapterName = chapters.firstOrNull { it.id == viewModel.chapterId }?.name.orEmpty()
+    val chapterName =
+        chapters.firstOrNull { it.id == (activeChapter?.chapterId ?: viewModel.chapterId) }?.name.orEmpty()
     val pageSizes by viewModel.pageSizes.collectAsState()
     val failedPages by viewModel.failedPages.collectAsState()
     val nextChapter by viewModel.nextChapter.collectAsState()
     val previousChapter by viewModel.previousChapter.collectAsState()
+    // Explicit jumps replace the window; natural page turns keep appending to it.
     val openNextChapter: () -> Unit = {
-        val loaded = (state as? ReaderUiState.Content)?.content
-        val next = (nextChapter as? NextChapterState.Next)?.chapter
-        if (loaded != null && next != null) onNextChapter(loaded.albumId, next.id)
+        (nextChapter as? NextChapterState.Next)?.chapter?.let { next ->
+            viewModel.openChapterInPlace(next.id)
+        }
     }
     val openPreviousChapter: () -> Unit = {
-        val loaded = (state as? ReaderUiState.Content)?.content
-        val previous = previousChapter
-        if (loaded != null && previous != null) onNextChapter(loaded.albumId, previous.id)
+        previousChapter?.let { previous ->
+            viewModel.openChapterInPlace(previous.id, startAtEnd = true)
+        }
     }
     // Warm the target page so seeking does not land on an empty placeholder.
     val prefetchPage: (Int) -> Unit = { target ->
-        val loaded = (state as? ReaderUiState.Content)?.content
-        if (loaded != null && target in loaded.pages.indices) {
-            val page = loaded.pages[target]
+        val slice = slices.getOrNull(target)
+        if (slice != null) {
             viewModel.ensurePage(
                 PageImage(
-                    chapterId = loaded.chapterId,
-                    fileName = page.fileName.ifBlank { "page-$target" },
-                    index = target,
-                    splitCount = page.splitCount,
-                    url = page.url,
+                    chapterId = slice.chapterId,
+                    fileName = slice.page.fileName.ifBlank { "page-${slice.indexInChapter}" },
+                    index = slice.indexInChapter,
+                    splitCount = slice.page.splitCount,
+                    url = slice.page.url,
                 ),
             )
         }
     }
-    val navigating = remember { mutableStateOf(false) }
-    val currentContent = rememberUpdatedState(content)
-    val currentNextChapter = rememberUpdatedState(nextChapter)
-    val currentOnNextChapter = rememberUpdatedState(onNextChapter)
-    val overscrollConnection =
-        remember {
-            object : NestedScrollConnection {
-                override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                    val pastTop =
-                        listState.firstVisibleItemIndex > 0 ||
-                            listState.firstVisibleItemScrollOffset > 0
-                    if (source == NestedScrollSource.UserInput &&
-                        available.y < 0f &&
-                        pastTop &&
-                        listState.layoutInfo.totalItemsCount > 0 &&
-                        !listState.canScrollForward
-                    ) {
-                        val next = (currentNextChapter.value as? NextChapterState.Next)?.chapter
-                        val chapter = currentContent.value
-                        if (next != null && chapter != null && !navigating.value) {
-                            navigating.value = true
-                            ReaderPerf.log {
-                                "chapter_overscroll from=${chapter.chapterId} to=${next.id}"
-                            }
-                            currentOnNextChapter.value(chapter.albumId, next.id)
-                        }
-                    }
-                    return Offset.Zero
-                }
-            }
-        }
     val fallbackRatio =
-        remember(pageSizes, content) {
-            val chapterId = content?.chapterId
+        remember(pageSizes, slices) {
             val sizes =
-                if (chapterId == null) {
-                    emptyList()
-                } else {
-                    content.pages.mapIndexedNotNull { index, page ->
-                        pageSizes["$chapterId/${page.fileName.ifBlank { "page-$index" }}"]
-                    }
+                slices.mapNotNull { slice ->
+                    pageSizes["${slice.chapterId}/${slice.page.fileName.ifBlank { "page-${slice.indexInChapter}" }}"]
                 }
             medianPageRatio(sizes)
         }
@@ -259,28 +296,35 @@ internal fun ReaderScreen(
             }
         }
     }
-    // Webtoon keeps its own scroll; paged modes report their page through onPageChanged.
-    LaunchedEffect(content?.chapterId, mode) {
-        if (mode != ReadingMode.Webtoon) return@LaunchedEffect
-        val pages = content?.pages ?: return@LaunchedEffect
-        if (pages.isEmpty()) return@LaunchedEffect
-        val target = readerPage.coerceIn(0, pages.lastIndex)
-        // A restored list already sits on the page; scrolling again would drop its inner offset.
-        if (listState.firstVisibleItemIndex != target) listState.scrollToItem(target)
+    // Webtoon keeps its own scroll over the window's flat page list.
+    val latestItems by rememberUpdatedState(items)
+    val latestItemOfPage by rememberUpdatedState(itemOfPage)
+    LaunchedEffect(windowId, mode, slices.isEmpty()) {
+        if (mode != ReadingMode.Webtoon || windowId == null) return@LaunchedEffect
+        if (items.isEmpty()) return@LaunchedEffect
+        // Restoring an existing window keeps its inner offset; a fresh window starts at its page.
+        val targetItem = itemOfPage.getOrElse(readerPage) { 0 }
+        if (listState.firstVisibleItemIndex != targetItem) {
+            listState.scrollToItem(targetItem)
+        }
         snapshotFlow { listState.firstVisibleItemIndex }
             .distinctUntilChanged()
-            .collect {
-                readerPage = it
-                viewModel.recordPage(it)
+            .collect { index ->
+                val page = latestItems.getOrNull(index)?.pageIndex ?: return@collect
+                readerPage = page
+                viewModel.onPageVisible(windowId, page)
             }
     }
     // Paged modes consume the jump themselves; this only serves the webtoon list.
     LaunchedEffect(pendingJump, mode) {
         if (mode != ReadingMode.Webtoon) return@LaunchedEffect
         val target = pendingJump ?: return@LaunchedEffect
-        val pages = content?.pages ?: return@LaunchedEffect
-        if (pages.isNotEmpty()) listState.scrollToItem(target.coerceIn(0, pages.lastIndex))
+        latestItemOfPage.getOrNull(target)?.let { listState.scrollToItem(it) }
         pendingJump = null
+    }
+    // Windows are replaced on explicit jumps, so one-shot navigation state resets with them.
+    LaunchedEffect(windowId) {
+        if (windowId != null) viewModel.onPageVisible(windowId, readerPage)
     }
 
     Box(modifier.fillMaxSize()) {
@@ -299,26 +343,30 @@ internal fun ReaderScreen(
                     is ReaderUiState.Failed ->
                         ErrorState(
                             message = current.message,
-                            onRetry = viewModel::load,
+                            onRetry = { viewModel.load() },
                             modifier = Modifier.fillMaxSize(),
                         )
 
                     is ReaderUiState.Content ->
-                        if (current.content.pages.isEmpty()) {
-                            EmptyState(
-                                icon = Icons.Rounded.AutoStories,
-                                title = stringResource(R.string.reader_empty_title),
-                                description = stringResource(R.string.reader_empty_description),
-                                modifier = Modifier.fillMaxSize(),
-                            )
-                        } else if (mode == ReadingMode.Webtoon) {
-                            Box(
-                                Modifier
-                                    .fillMaxSize()
-                                    .nestedScroll(overscrollConnection),
-                            ) {
+                        key(current.window.id) {
+                            if (current.window.totalPages == 0) {
+                                Box(Modifier.fillMaxSize()) {
+                                    EmptyState(
+                                        icon = Icons.Rounded.AutoStories,
+                                        title = stringResource(R.string.reader_empty_title),
+                                        description = stringResource(R.string.reader_empty_description),
+                                        modifier = Modifier.fillMaxSize(),
+                                    )
+                                    TextButton(
+                                        onClick = onBack,
+                                        modifier = Modifier.align(Alignment.TopStart).padding(12.dp),
+                                    ) {
+                                        Text(stringResource(R.string.action_back))
+                                    }
+                                }
+                            } else if (mode == ReadingMode.Webtoon) {
                                 ReaderPages(
-                                    content = current.content,
+                                    items = items,
                                     listState = listState,
                                     pageSizes = pageSizes,
                                     failedPages = failedPages,
@@ -359,30 +407,30 @@ internal fun ReaderScreen(
                                             }
                                             .hazeSource(hazeState),
                                 )
+                            } else {
+                                PagedReader(
+                                    items = items,
+                                    mode = mode,
+                                    startItem = itemOfPage.getOrElse(readerPage) { 0 },
+                                    pageSizes = pageSizes,
+                                    failedPages = failedPages,
+                                    imageWidthPx = imageWidthPx,
+                                    onFileOf = viewModel::fileOf,
+                                    onRetry = viewModel::retry,
+                                    onPageChanged = { page ->
+                                        readerPage = page
+                                        viewModel.onPageVisible(current.window.id, page)
+                                    },
+                                    nextChapter = nextChapter,
+                                    onRetryNext = viewModel::retryNextChapter,
+                                    onOpenNextChapter = openNextChapter,
+                                    jumpToItem = pendingJump?.let { itemOfPage.getOrNull(it) },
+                                    onJumpConsumed = { pendingJump = null },
+                                    onBack = onBack,
+                                    onToggleMenu = { controlsVisible = !controlsVisible },
+                                    modifier = Modifier.fillMaxSize().hazeSource(hazeState),
+                                )
                             }
-                        } else {
-                            PagedReader(
-                                content = current.content,
-                                mode = mode,
-                                startPage = readerPage,
-                                pageSizes = pageSizes,
-                                failedPages = failedPages,
-                                imageWidthPx = imageWidthPx,
-                                onFileOf = viewModel::fileOf,
-                                onRetry = viewModel::retry,
-                                onPageChanged = { page ->
-                                    readerPage = page
-                                    viewModel.recordPage(page)
-                                },
-                                nextChapter = nextChapter,
-                                onRetryNext = viewModel::retryNextChapter,
-                                onOpenNextChapter = openNextChapter,
-                                jumpToPage = pendingJump,
-                                onJumpConsumed = { pendingJump = null },
-                                onBack = onBack,
-                                onToggleMenu = { controlsVisible = !controlsVisible },
-                                modifier = Modifier.fillMaxSize().hazeSource(hazeState),
-                            )
                         }
                 }
             }
@@ -411,17 +459,18 @@ internal fun ReaderScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 ReaderSeekBar(
-                    page = readerPage,
-                    total = content?.pages?.size ?: 0,
+                    page = localPage,
+                    total = activePageCount,
                     showPageNumber = showPageNumber,
                     canGoPrevious = previousChapter != null,
                     canGoNext = nextChapter is NextChapterState.Next,
                     onPreviousChapter = openPreviousChapter,
                     onNextChapter = openNextChapter,
                     onSeek = { target ->
-                        prefetchPage(target)
-                        pendingJump = target
+                        // The scrubber is per chapter; map it onto the window's global index.
+                        pendingJump = activeStart + target
                     },
+                    onSeekFinished = { target -> prefetchPage(activeStart + target) },
                     hazeState = hazeState,
                 )
                 ReaderBottomBar(
@@ -433,14 +482,14 @@ internal fun ReaderScreen(
         }
         // While the bars are hidden the page counter floats on its own, blurred over the page.
         AnimatedVisibility(
-            visible = !controlsVisible && showPageNumber && content?.pages?.isNotEmpty() == true,
+            visible = !controlsVisible && showPageNumber && activePageCount > 0,
             modifier = Modifier.align(Alignment.BottomCenter),
             enter = fadeIn(),
             exit = fadeOut(),
         ) {
             ReaderPageIndicator(
-                page = readerPage,
-                total = content?.pages?.size ?: 0,
+                page = localPage,
+                total = activePageCount,
                 hazeState = hazeState,
             )
         }
@@ -465,12 +514,10 @@ internal fun ReaderScreen(
     if (showChapters) {
         ReaderChapterSheet(
             chapters = chapters,
-            currentChapterId = viewModel.chapterId,
+            currentChapterId = activeChapter?.chapterId ?: viewModel.chapterId,
             onSelect = { chapter ->
                 showChapters = false
-                if (chapter.id != viewModel.chapterId) {
-                    onNextChapter(viewModel.albumId, chapter.id)
-                }
+                viewModel.openChapterInPlace(chapter.id)
             },
             onDismiss = { showChapters = false },
         )
@@ -542,6 +589,7 @@ private fun ReaderSeekBar(
     onPreviousChapter: () -> Unit,
     onNextChapter: () -> Unit,
     onSeek: (Int) -> Unit,
+    onSeekFinished: (Int) -> Unit,
     hazeState: HazeState,
 ) {
     val lastIndex = (total - 1).coerceAtLeast(0)
@@ -596,6 +644,9 @@ private fun ReaderSeekBar(
                 val target = scrubValue.roundToInt().coerceIn(0, lastIndex)
                 if (target != lastRequested) onSeek(target)
                 lastRequested = -1
+                // Only the landing page is worth warming; dragging across pages must not queue
+                // a download per intermediate page.
+                onSeekFinished(target)
             },
             valueRange = 0f..lastIndex.toFloat(),
             enabled = total > 1,
@@ -683,9 +734,57 @@ private fun ReaderPageIndicator(
     }
 }
 
+/** One page of the flattened window, tagged with the chapter it belongs to. */
+internal data class ReaderSlice(
+    val chapterId: String,
+    val indexInChapter: Int,
+    val page: ReaderPage,
+)
+
+/** A row of the reader: either a page or the divider between two chapters. */
+private sealed interface ReaderItem {
+    /** Page index this row belongs to, used for progress and the page counter. */
+    val pageIndex: Int
+
+    data class Page(val slice: ReaderSlice, override val pageIndex: Int) : ReaderItem
+
+    data class Transition(
+        val from: String,
+        val to: String,
+        override val pageIndex: Int,
+    ) : ReaderItem
+}
+
+/** Centered "chapter finished / next chapter" divider, like the reference reader. */
+@Composable
+private fun ChapterTransitionItem(from: String, to: String, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 40.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = stringResource(R.string.reader_chapter_finished, from),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(14.dp))
+        Text(
+            text = stringResource(R.string.reader_chapter_up_next),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = to,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
 @Composable
 private fun ReaderPages(
-    content: ChapterContent,
+    items: List<ReaderItem>,
     listState: LazyListState,
     pageSizes: Map<String, PageSize>,
     failedPages: Set<String>,
@@ -705,30 +804,43 @@ private fun ReaderPages(
         contentPadding = PaddingValues(vertical = 4.dp),
     ) {
         itemsIndexed(
-            items = content.pages,
-            key = { index, page -> "$index:${page.fileName}" },
-            contentType = { _, _ -> "page" },
-        ) { index, page ->
-            val image =
-                remember(content.chapterId, page.url, page.fileName, page.splitCount, index) {
-                    PageImage(
-                        chapterId = content.chapterId,
-                        fileName = page.fileName.ifBlank { "page-$index" },
-                        index = index,
-                        splitCount = page.splitCount,
-                        url = page.url,
+            items = items,
+            key = { _, item ->
+                when (item) {
+                    is ReaderItem.Page ->
+                        "p:${item.slice.chapterId}:${item.slice.indexInChapter}:${item.slice.page.fileName}"
+                    is ReaderItem.Transition -> "t:${item.from}:${item.to}"
+                }
+            },
+            contentType = { _, item -> if (item is ReaderItem.Page) "page" else "transition" },
+        ) { _, item ->
+            when (item) {
+                is ReaderItem.Page -> {
+                    val slice = item.slice
+                    val page = slice.page
+                    val image =
+                        remember(slice.chapterId, page.url, page.fileName, page.splitCount, slice.indexInChapter) {
+                            PageImage(
+                                chapterId = slice.chapterId,
+                                fileName = page.fileName.ifBlank { "page-${slice.indexInChapter}" },
+                                index = slice.indexInChapter,
+                                splitCount = page.splitCount,
+                                url = page.url,
+                            )
+                        }
+                    ReaderPageImage(
+                        image = image,
+                        index = slice.indexInChapter,
+                        knownSize = pageSizes[image.cacheKey],
+                        failed = image.cacheKey in failedPages,
+                        fallbackRatio = fallbackRatio,
+                        imageWidthPx = imageWidthPx,
+                        fileOf = onFileOf,
+                        retry = onRetry,
                     )
                 }
-            ReaderPageImage(
-                image = image,
-                index = index,
-                knownSize = pageSizes[image.cacheKey],
-                failed = image.cacheKey in failedPages,
-                fallbackRatio = fallbackRatio,
-                imageWidthPx = imageWidthPx,
-                fileOf = onFileOf,
-                retry = onRetry,
-            )
+                is ReaderItem.Transition -> ChapterTransitionItem(item.from, item.to)
+            }
         }
         item(key = "reader-footer", contentType = "footer") {
             ReaderFooter(
@@ -1008,9 +1120,9 @@ private const val MIN_RATIO_SAMPLES = 3
 
 @Composable
 private fun PagedReader(
-    content: ChapterContent,
+    items: List<ReaderItem>,
     mode: ReadingMode,
-    startPage: Int,
+    startItem: Int,
     pageSizes: Map<String, PageSize>,
     failedPages: Set<String>,
     imageWidthPx: Int,
@@ -1020,18 +1132,28 @@ private fun PagedReader(
     nextChapter: NextChapterState,
     onRetryNext: () -> Unit,
     onOpenNextChapter: () -> Unit,
-    jumpToPage: Int?,
+    jumpToItem: Int?,
     onJumpConsumed: () -> Unit,
     onBack: () -> Unit,
     onToggleMenu: () -> Unit,
     modifier: Modifier,
 ) {
-    val pages = content.pages
+    val itemCount = items.size
     val state = rememberPagerState(
-        initialPage = startPage.coerceIn(0, pages.lastIndex),
-    ) { pages.size + 1 }
+        initialPage = startItem.coerceIn(0, itemCount.coerceAtLeast(0)),
+    ) { itemCount + 1 }
+    // A restored pager state may point into a window that no longer exists; align it once.
+    LaunchedEffect(state) {
+        if (state.currentPage != startItem) state.scrollToPage(startItem)
+    }
     val scope = rememberCoroutineScope()
     val rightToLeft = mode == ReadingMode.PagedRightToLeft
+    // The gesture block outlives recompositions, so read the latest neighbours instead of the
+    // values captured when it was created.
+    val latestNextChapter by rememberUpdatedState(nextChapter)
+    val latestOpenNext by rememberUpdatedState(onOpenNextChapter)
+    val latestLastIndex by rememberUpdatedState(items.lastIndex)
+    val latestItemCount by rememberUpdatedState(itemCount)
     // Tap zones mirror the reference reader: thirds turn the page, the middle opens the menu.
     val pagerModifier =
         modifier.pointerInput(mode) {
@@ -1039,9 +1161,13 @@ private fun PagedReader(
                 val width = size.width.toFloat()
                 val height = size.height.toFloat()
                 fun turn(target: Int) {
-                    scope.launch {
-                        state.animateScrollToPage(target.coerceIn(0, pages.lastIndex))
+                    if (target < 0) return
+                    if (target > latestLastIndex) {
+                        // The next chapter is still loading: park on the footer page.
+                        scope.launch { state.animateScrollToPage(latestItemCount) }
+                        return
                     }
+                    scope.launch { state.animateScrollToPage(target) }
                 }
                 when (mode) {
                     ReadingMode.VerticalPager ->
@@ -1060,28 +1186,39 @@ private fun PagedReader(
             }
         }
 
-    LaunchedEffect(state) {
+    LaunchedEffect(state, items.size) {
         snapshotFlow { state.currentPage }
             .distinctUntilChanged()
-            .collect { page -> if (page < pages.size) onPageChanged(page) }
+            .collect { index ->
+                // The footer page still belongs to the last page of the window, so it can trigger
+                // the append when the reader reaches the end before the next chapter is loaded.
+                val page = items.getOrNull(index)?.pageIndex ?: items.lastOrNull()?.pageIndex
+                if (page != null) onPageChanged(page)
+            }
     }
-    LaunchedEffect(state, jumpToPage) {
-        val target = jumpToPage ?: return@LaunchedEffect
-        if (target in pages.indices) state.scrollToPage(target)
+    LaunchedEffect(state, jumpToItem, items.size) {
+        val target = jumpToItem ?: return@LaunchedEffect
+        if (target in 0 until items.size) state.scrollToPage(target)
         onJumpConsumed()
     }
 
     val pageContent: @Composable (Int) -> Unit = { index ->
-        if (index < pages.size) {
-            PagedPage(
-                index = index,
-                content = content,
-                pageSizes = pageSizes,
-                failedPages = failedPages,
-                imageWidthPx = imageWidthPx,
-                onFileOf = onFileOf,
-                onRetry = onRetry,
-            )
+        if (index < itemCount) {
+            when (val item = items[index]) {
+                is ReaderItem.Page ->
+                    PagedPage(
+                        slice = item.slice,
+                        pageSizes = pageSizes,
+                        failedPages = failedPages,
+                        imageWidthPx = imageWidthPx,
+                        onFileOf = onFileOf,
+                        onRetry = onRetry,
+                    )
+                is ReaderItem.Transition ->
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        ChapterTransitionItem(item.from, item.to)
+                    }
+            }
         } else {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 ReaderFooter(
@@ -1112,28 +1249,27 @@ private fun PagedReader(
 
 @Composable
 private fun PagedPage(
-    index: Int,
-    content: ChapterContent,
+    slice: ReaderSlice,
     pageSizes: Map<String, PageSize>,
     failedPages: Set<String>,
     imageWidthPx: Int,
     onFileOf: (PageImage) -> File?,
     onRetry: (PageImage) -> Unit,
 ) {
-    val page = content.pages[index]
+    val page = slice.page
     val image =
-        remember(content.chapterId, page.url, page.fileName, page.splitCount, index) {
+        remember(slice.chapterId, page.url, page.fileName, page.splitCount, slice.indexInChapter) {
             PageImage(
-                chapterId = content.chapterId,
-                fileName = page.fileName.ifBlank { "page-$index" },
-                index = index,
+                chapterId = slice.chapterId,
+                fileName = page.fileName.ifBlank { "page-${slice.indexInChapter}" },
+                index = slice.indexInChapter,
                 splitCount = page.splitCount,
                 url = page.url,
             )
         }
     ReaderPageArtwork(
         image = image,
-        index = index,
+        index = slice.indexInChapter,
         knownSize = pageSizes[image.cacheKey],
         failed = image.cacheKey in failedPages,
         imageWidthPx = imageWidthPx,

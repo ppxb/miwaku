@@ -138,12 +138,7 @@ fun MiwakuApp(
                 )
             }
             composable<ReaderRoute> {
-                ReaderScreen(
-                    onBack = { navController.popBackStack() },
-                    onNextChapter = { albumId, chapterId ->
-                        navController.navigateToReader(albumId, chapterId, replace = true)
-                    },
-                )
+                ReaderScreen(onBack = { navController.popBackStack() })
             }
             composable<SettingsRoute> {
                 SettingsScreen(

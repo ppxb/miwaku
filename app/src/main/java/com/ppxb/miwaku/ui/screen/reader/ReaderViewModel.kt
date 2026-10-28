@@ -21,10 +21,43 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/**
+ * Consecutive chapters rendered as one continuous page list, mirroring the reference reader. Pages
+ * of the next chapter are appended before the user reaches the end, so turning past the last page
+ * simply continues into the next chapter.
+ */
+internal data class ReaderWindow(
+    val chapters: List<ChapterContent>,
+    val activeIndex: Int,
+    val id: Int,
+) {
+    val active: ChapterContent get() = chapters[activeIndex]
+
+    val totalPages: Int get() = chapters.sumOf { it.pages.size }
+
+    fun startOf(index: Int): Int {
+        var start = 0
+        for (i in 0 until index) start += chapters[i].pages.size
+        return start
+    }
+
+    /** Maps a global page index to (chapter index, page index inside that chapter). */
+    fun locate(global: Int): Pair<Int, Int> {
+        var start = 0
+        for ((index, chapter) in chapters.withIndex()) {
+            val size = chapter.pages.size
+            if (global < start + size) return index to (global - start)
+            start += size
+        }
+        val last = chapters.lastIndex.coerceAtLeast(0)
+        return last to chapters[last].pages.lastIndex.coerceAtLeast(0)
+    }
+}
+
 internal sealed interface ReaderUiState {
     data object Loading : ReaderUiState
 
-    data class Content(val content: ChapterContent) : ReaderUiState
+    data class Content(val window: ReaderWindow) : ReaderUiState
 
     data class Failed(val message: String) : ReaderUiState
 }
@@ -37,10 +70,23 @@ internal sealed interface NextChapterState {
     data class Next(val chapter: ChapterSummary) : NextChapterState
 }
 
-internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel() {
+internal class ReaderViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel() {
     val albumId: String = checkNotNull(savedStateHandle.get<String>("albumId"))
-    val chapterId: String = checkNotNull(savedStateHandle.get<String>("chapterId"))
-    val initialPage: Int = savedStateHandle.get<Int>("page") ?: 0
+
+    /**
+     * Active chapter. It changes when the page list crosses into an appended chapter; written on the
+     * main thread and read from IO while resolving the chapter list.
+     */
+    @Volatile
+    var chapterId: String = checkNotNull(savedStateHandle.get<String>("chapterId"))
+        private set
+
+    /**
+     * Page the first chapter should start at. `-1` means the last page, used when going back a
+     * chapter so it opens at the end.
+     */
+    var startPage: Int = savedStateHandle.get<Int>("page") ?: 0
+        private set
 
     private val _state = MutableStateFlow<ReaderUiState>(ReaderUiState.Loading)
     val state: StateFlow<ReaderUiState> = _state.asStateFlow()
@@ -71,59 +117,145 @@ internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
     private var detailJob: Job? = null
     private var nextManifestJob: Job? = null
     private var nextPrefetchJob: Job? = null
-    private var currentContent: ChapterContent? = null
-    private var currentPage = initialPage
+    private var appendJob: Job? = null
+    private var windowId = 0
+    private var currentGlobal = 0
+    private var currentLocal = startPage
     private val nextPrefetchStarted = AtomicBoolean(false)
+    private var prefetchedNextId: String? = null
+    private var pendingTargetChapter: String? = null
+
+    /** Snapshot used to restore the previous window when a chapter load fails. */
+    private data class Rollback(
+        val window: ReaderWindow,
+        val chapterId: String,
+        val startPage: Int,
+        val global: Int,
+    )
+
+    private var rollback: Rollback? = null
 
     init {
         load()
     }
 
-    fun load() {
+    /**
+     * Replaces the window with [target]. Used by explicit jumps (chapter list, chapter arrows) and
+     * by the previous/next buttons; natural page turns never go through here.
+     */
+    fun openChapterInPlace(target: String, startAtEnd: Boolean = false) {
+        val content = _state.value as? ReaderUiState.Content
+        if (target == chapterId && content != null) return
+        if (content != null) {
+            rollback = Rollback(content.window, chapterId, startPage, currentGlobal)
+        }
+        chapterId = target
+        startPage = if (startAtEnd) -1 else 0
+        pendingTargetChapter = target
+        savedStateHandle["chapterId"] = target
+        savedStateHandle["page"] = startPage
+        load(keepContent = true)
+    }
+
+    fun load(keepContent: Boolean = false) {
         loadJob?.cancel()
+        appendJob?.cancel()
         prefetcher?.cancel()
         prefetcher = null
         detailJob?.cancel()
         nextManifestJob?.cancel()
         nextPrefetchJob?.cancel()
         nextPrefetchStarted.set(false)
-        currentContent = null
-        currentPage = initialPage
+        currentGlobal = 0
+        currentLocal = startPage
         _nextChapter.value = NextChapterState.Unknown
         _previousChapter.value = null
         _failedPages.value = emptySet()
         ReaderPerf.log {
-            "reader_load_start chapter=$chapterId page=$initialPage"
+            "reader_load_start chapter=$chapterId page=$startPage"
         }
         loadJob = viewModelScope.launch {
-            _state.value = ReaderUiState.Loading
+            if (!keepContent) _state.value = ReaderUiState.Loading
             val started = ReaderPerf.mark()
             try {
                 val content = withContext(Dispatchers.IO) { AppGraph.comics.chapter(albumId, chapterId) }
-                currentContent = content
-                _state.value = ReaderUiState.Content(content)
+                val resolvedStart =
+                    if (startPage < 0) {
+                        content.pages.lastIndex.coerceAtLeast(0)
+                    } else {
+                        startPage.coerceIn(0, content.pages.lastIndex.coerceAtLeast(0))
+                    }
+                currentGlobal = resolvedStart
+                currentLocal = resolvedStart
+                startPage = resolvedStart
+                savedStateHandle["page"] = resolvedStart
+                _state.value =
+                    ReaderUiState.Content(
+                        ReaderWindow(listOf(content), activeIndex = 0, id = ++windowId),
+                    )
                 ReaderPerf.log {
                     "reader_content_ready chapter=$chapterId pages=${content.pages.size} ms=${ReaderPerf.mark() - started}"
                 }
-                startPrefetch(content)
-                resolveNextChapter()
+                startPrefetch(content, resolvedStart)
+                rollback = null
+                pendingTargetChapter = null
+                resolveChapters()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 ReaderPerf.log { "reader_load_failed chapter=$chapterId msg=${e.message}" }
                 android.util.Log.w("Reader", "chapter load failed: $albumId/$chapterId", e)
-                _state.value = ReaderUiState.Failed("加载失败，请重试")
+                val restore = rollback
+                if (keepContent && restore != null) {
+                    // The jump failed: put the previous window back so the reader stays usable.
+                    rollback = null
+                    pendingTargetChapter = null
+                    chapterId = restore.chapterId
+                    startPage = restore.startPage
+                    currentGlobal = restore.global
+                    val window = restore.window
+                    val (_, local) = window.locate(restore.global)
+                    currentLocal = local
+                    savedStateHandle["chapterId"] = restore.chapterId
+                    savedStateHandle["page"] = local
+                    _state.value = ReaderUiState.Content(window)
+                    startPrefetch(window.active, local)
+                    resolveChapters()
+                } else {
+                    pendingTargetChapter = null
+                    _state.value = ReaderUiState.Failed("加载失败，请重试")
+                }
             }
         }
     }
 
-    fun recordPage(page: Int) {
-        val lastIndex = currentContent?.pages?.lastIndex ?: -1
-        val safePage = if (lastIndex >= 0) page.coerceIn(0, lastIndex) else page
-        currentPage = safePage
-        prefetcher?.update(safePage)
-        maybePrefetchNext(safePage)
-        AppGraph.progress.record(albumId, chapterId, safePage)
+    /**
+     * Called whenever the visible page changes. Updates the active chapter, progress and appends the
+     * next chapter when the end of the window is near.
+     */
+    fun onPageVisible(windowId: Int, global: Int) {
+        val content = _state.value as? ReaderUiState.Content ?: return
+        if (content.window.id != windowId) return
+        // A jump is loading; ignore stale reports from the window that is being replaced.
+        if (pendingTargetChapter != null) return
+        val window = content.window
+        if (global !in 0 until window.totalPages) return
+        val (chapterIndex, local) = window.locate(global)
+        val chapter = window.chapters[chapterIndex]
+        currentGlobal = global
+        currentLocal = local
+        if (chapterIndex != window.activeIndex) {
+            chapterId = chapter.chapterId
+            savedStateHandle["chapterId"] = chapter.chapterId
+            _state.value = ReaderUiState.Content(window.copy(activeIndex = chapterIndex))
+            startPrefetch(chapter, local)
+            updateNeighbors()
+        }
+        savedStateHandle["page"] = local
+        prefetcher?.update(local)
+        maybePrefetchNext(local)
+        AppGraph.progress.record(albumId, chapter.chapterId, local)
+        if (global >= window.totalPages - APPEND_THRESHOLD) ensureNextLoaded()
     }
 
     fun fileOf(image: PageImage): File? = AppGraph.pageStore.cachedFile(image)
@@ -146,15 +278,15 @@ internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
             withContext(Dispatchers.IO) { AppGraph.pageStore.invalidate(image) }
             _failedPages.update { it - image.cacheKey }
             ensurePage(image)
-            prefetcher?.update(currentPage)
+            prefetcher?.update(currentLocal)
         }
     }
 
     fun retryNextChapter() {
-        if (_nextChapter.value is NextChapterState.Next || _nextChapter.value is NextChapterState.None) {
-            return
+        when (_nextChapter.value) {
+            is NextChapterState.Next -> ensureNextLoaded()
+            else -> resolveChapters()
         }
-        resolveNextChapter()
     }
 
     override fun onCleared() {
@@ -162,10 +294,71 @@ internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
         detailJob?.cancel()
         nextManifestJob?.cancel()
         nextPrefetchJob?.cancel()
+        appendJob?.cancel()
         super.onCleared()
     }
 
-    private fun startPrefetch(content: ChapterContent) {
+    /** Loads the next chapter and appends its pages to the current window. */
+    private fun ensureNextLoaded() {
+        val content = _state.value as? ReaderUiState.Content ?: return
+        val next = (_nextChapter.value as? NextChapterState.Next)?.chapter ?: return
+        val window = content.window
+        if (window.chapters.any { it.chapterId == next.id }) return
+        if (appendJob?.isActive == true) return
+        val windowIdAtStart = window.id
+        appendJob =
+            viewModelScope.launch(Dispatchers.IO) {
+                val started = ReaderPerf.mark()
+                ReaderPerf.log { "append_start next=${next.id}" }
+                val loaded =
+                    try {
+                        AppGraph.comics.chapter(albumId, next.id)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        ReaderPerf.log { "append_failed next=${next.id}" }
+                        return@launch
+                    }
+                val current = _state.value as? ReaderUiState.Content ?: return@launch
+                val currentWindow = current.window
+                // The user may have jumped to another chapter while the manifest was loading.
+                if (currentWindow.id != windowIdAtStart) return@launch
+                if (currentWindow.chapters.any { it.chapterId == next.id }) return@launch
+                if (loaded.pages.isEmpty()) {
+                    ReaderPerf.log { "append_empty next=${next.id}" }
+                    return@launch
+                }
+                ReaderPerf.log {
+                    "append_done next=${next.id} pages=${loaded.pages.size} ms=${ReaderPerf.mark() - started}"
+                }
+                withContext(Dispatchers.Main) {
+                    val latest = _state.value as? ReaderUiState.Content ?: return@withContext
+                    if (latest.window.id != windowIdAtStart) return@withContext
+                    if (latest.window.chapters.any { it.chapterId == next.id }) return@withContext
+                    _state.value =
+                        ReaderUiState.Content(
+                            latest.window.copy(chapters = latest.window.chapters + loaded),
+                        )
+                    updateNeighbors()
+                }
+                viewModelScope.launch(Dispatchers.IO) {
+                    AppGraph.pageStore.loadCachedSizes(
+                        loaded.pages.mapIndexed { index, page ->
+                            PageImage(
+                                chapterId = loaded.chapterId,
+                                fileName = page.fileName.ifBlank { "page-$index" },
+                                index = index,
+                                splitCount = page.splitCount,
+                                url = page.url,
+                            )
+                        },
+                    )
+                }
+            }
+    }
+
+    private fun startPrefetch(content: ChapterContent, startPage: Int) {
+        prefetcher?.cancel()
         val images =
             content.pages.mapIndexed { index, page ->
                 PageImage(
@@ -191,11 +384,11 @@ internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
                     },
                 behind = if (AppGraph.settings.lowMemory.value) LOW_MEMORY_PREFETCH_BEHIND else 2,
                 prefetchAllowed = { AppGraph.isPrefetchAllowed() },
-            ).also { it.start(initialPage) }
+            ).also { it.start(startPage) }
         viewModelScope.launch(Dispatchers.IO) { AppGraph.pageStore.loadCachedSizes(images) }
     }
 
-    private fun resolveNextChapter() {
+    private fun resolveChapters() {
         detailJob?.cancel()
         detailJob = viewModelScope.launch(Dispatchers.IO) {
             val started = ReaderPerf.mark()
@@ -213,30 +406,32 @@ internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
             }
             _chapters.value = detail.chapters
             _albumTitle.value = detail.title
-            val index = detail.chapters.indexOfFirst { it.id == chapterId }
-            if (index < 0) {
-                ReaderPerf.log {
-                    "next_resolve_missing chapter=$chapterId chapters=${detail.chapters.size}"
-                }
-                _previousChapter.value = null
-                _nextChapter.value =
-                    if (detail.chapters.size <= 1) {
-                        NextChapterState.None
-                    } else {
-                        NextChapterState.Unknown
-                    }
-                return@launch
-            }
-            _previousChapter.value = detail.chapters.getOrNull(index - 1)
-            val next = detail.chapters.getOrNull(index + 1)
-            _nextChapter.value = if (next != null) NextChapterState.Next(next) else NextChapterState.None
+            updateNeighbors()
             ReaderPerf.log {
-                "next_resolved chapter=$chapterId next=${next?.id ?: "none"} ms=${ReaderPerf.mark() - started}"
+                "next_resolved chapter=$chapterId ms=${ReaderPerf.mark() - started}"
             }
-            if (next != null) {
-                prefetchNextManifest(next)
-                maybePrefetchNext(currentPage)
+        }
+    }
+
+    /** Recomputes the previous/next chapter relative to the current window. */
+    private fun updateNeighbors() {
+        val content = _state.value as? ReaderUiState.Content ?: return
+        val list = _chapters.value
+        if (list.isEmpty()) return
+        val window = content.window
+        val activePosition = list.indexOfFirst { it.id == window.active.chapterId }
+        _previousChapter.value = if (activePosition >= 0) list.getOrNull(activePosition - 1) else null
+        val next = if (activePosition >= 0) list.getOrNull(activePosition + 1) else null
+        _nextChapter.value = if (next != null) NextChapterState.Next(next) else NextChapterState.None
+        if (next != null) {
+            if (next.id != prefetchedNextId) {
+                prefetchedNextId = next.id
+                nextPrefetchStarted.set(false)
             }
+            prefetchNextManifest(next)
+            maybePrefetchNext(currentLocal)
+            // The chapter list may arrive after the reader already sits near the end.
+            if (currentGlobal >= window.totalPages - APPEND_THRESHOLD) ensureNextLoaded()
         }
     }
 
@@ -259,7 +454,7 @@ internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: Exception) {
-                    // The transition will fetch it again if needed.
+                    // The append will fetch it again if needed.
                 }
                 ReaderPerf.log {
                     "next_manifest_done next=${next.id} ms=${ReaderPerf.mark() - started}"
@@ -268,10 +463,11 @@ internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
     }
 
     private fun maybePrefetchNext(page: Int) {
-        val content = currentContent ?: return
+        val content = _state.value as? ReaderUiState.Content ?: return
+        val chapter = content.window.active
         val next = (_nextChapter.value as? NextChapterState.Next)?.chapter ?: return
-        if (content.pages.isEmpty()) return
-        if (page < content.pages.size - NEXT_PREFETCH_THRESHOLD) return
+        if (chapter.pages.isEmpty()) return
+        if (page < chapter.pages.size - NEXT_PREFETCH_THRESHOLD) return
         if (AppGraph.settings.lowMemory.value) return
         if (!AppGraph.isPrefetchAllowed()) return
         if (!nextPrefetchStarted.compareAndSet(false, true)) return
@@ -304,7 +500,7 @@ internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
                         } catch (e: CancellationException) {
                             throw e
                         } catch (_: Exception) {
-                            // The reader will retry on demand after the transition.
+                            // The reader will retry on demand when the append lands.
                         }
                     }
                 }
@@ -315,8 +511,9 @@ internal class ReaderViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
     }
 
     private companion object {
+        const val APPEND_THRESHOLD = 5
         const val NEXT_PREFETCH_THRESHOLD = 5
-        const val NEXT_PREFETCH_PAGES = 3
+        const val NEXT_PREFETCH_PAGES = 5
         const val LOW_MEMORY_PREFETCH_AHEAD = 2
         const val LOW_MEMORY_PREFETCH_BEHIND = 1
     }

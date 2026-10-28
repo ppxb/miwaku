@@ -67,6 +67,8 @@
     <string name="reader_next_unknown">正在确认下一章…</string>
     <string name="reader_end_of_comic">全文完</string>
     <string name="reader_next_up">接下来</string>
+    <string name="reader_chapter_finished">%1$s 已读完</string>
+    <string name="reader_chapter_up_next">下一话</string>
     <string name="reader_previous_chapter">上一章</string>
     <string name="reader_next_chapter">下一章</string>
     <string name="reader_open_next">阅读下一章</string>
