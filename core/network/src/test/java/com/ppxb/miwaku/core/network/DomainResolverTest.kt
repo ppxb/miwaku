@@ -108,6 +108,9 @@ class DomainResolverTest {
                     val url = chain.request().url.toString()
                     val ts = chain.request().url.queryParameter("t")?.toLongOrNull() ?: (System.currentTimeMillis() / 1000L)
                     when {
+                        url.startsWith("https://dead.net") -> {
+                            throw java.io.IOException("unreachable")
+                        }
                         url.startsWith("https://fast.net") -> {
                             val innerJson = """{"jm3_version": "2.1.12", "img_host": "https://img-fast.net"}"""
                             val outerJson = """{"code": 200, "data": "${encryptPayload(innerJson, ts)}"}"""
@@ -146,14 +149,32 @@ class DomainResolverTest {
 
         val resolver = DomainResolver(client)
         val result = resolver.probeSetting(
-            candidates = listOf("https://dead.net", "https://slow.net", "https://fast.net"),
-            concurrency = 3,
+            candidates =
+                listOf(
+                    "https://dead.net",
+                    "https://degraded.net",
+                    "https://slow.net",
+                    "https://fast.net",
+                ),
+            concurrency = 4,
         )
 
         assertEquals("https://fast.net", result.snapshot.baseUrl)
         assertEquals("https://img-fast.net", result.snapshot.imageHost)
         assertEquals("2.1.12", result.snapshot.version)
-        assertEquals(listOf("https://fast.net", "https://slow.net"), result.orderedBases)
+        // ok first by latency, then degraded even though it failed immediately.
+        assertEquals(
+            listOf("https://fast.net", "https://slow.net", "https://degraded.net"),
+            result.orderedBases,
+        )
+        assertEquals(
+            EndpointStatus.Degraded,
+            result.probes.first { it.baseUrl == "https://degraded.net" }.status,
+        )
+        assertEquals(
+            EndpointStatus.Dead,
+            result.probes.first { it.baseUrl == "https://dead.net" }.status,
+        )
         assertTrue(result.latencyMs >= 0)
     }
 

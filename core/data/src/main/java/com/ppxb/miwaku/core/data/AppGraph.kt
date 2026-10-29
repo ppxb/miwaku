@@ -16,6 +16,7 @@ import com.ppxb.miwaku.core.network.NetworkMetricsInterceptor
 import com.ppxb.miwaku.core.network.PersistentCookieJar
 import com.ppxb.miwaku.core.network.RateLimitInterceptor
 import com.ppxb.miwaku.core.network.RetryInterceptor
+import com.ppxb.miwaku.core.network.SharedEndpointPoolStore
 import com.ppxb.miwaku.core.network.SharedSettingSnapshotStore
 import java.util.concurrent.TimeUnit
 import kotlin.time.Duration.Companion.seconds
@@ -73,7 +74,8 @@ object AppGraph {
     }
 
     private val settingStore by lazy { SharedSettingSnapshotStore(appContext) }
-    private val apiClient by lazy { ApiClient(apiHttpClient, settingStore) }
+    private val endpointPoolStore by lazy { SharedEndpointPoolStore(appContext) }
+    private val apiClient by lazy { ApiClient(apiHttpClient, settingStore, endpointPoolStore) }
     private val manifests by lazy { ChapterManifestCache(appContext) }
     private val detailStore by lazy { ComicDetailCache(appContext) }
     val downloadStore by lazy { DownloadStore(appContext) }

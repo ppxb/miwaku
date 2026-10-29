@@ -33,7 +33,12 @@ internal object Codec {
     @SuppressLint("GetInstance")
     fun decodeHostConfig(raw: String): List<String>? =
         runCatching {
-            val cleaned = raw.dropWhile { it.code > 127 || it.isWhitespace() }.trim()
+            // Bytepluses files often carry a BOM, newlines, or a CDN preamble. Keep only
+            // base64 alphabet characters before normalizing for the AES payload.
+            val cleaned =
+                raw.filter {
+                    it.isLetterOrDigit() || it == '+' || it == '/' || it == '=' || it == '-' || it == '_'
+                }
             if (cleaned.isEmpty()) return null
             val normalized = normalizeBase64(cleaned)
             val key = SecretKeySpec(md5Hex(ApiConfig.HOST_CONFIG_SECRET).toByteArray(Charsets.UTF_8), "AES")

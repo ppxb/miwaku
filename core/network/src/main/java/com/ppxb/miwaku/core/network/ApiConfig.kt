@@ -21,6 +21,7 @@ internal object ApiConfig {
     val API_BASES =
         listOf(
             "https://www.cdnhjk.net",
+            "https://www.cdnutc.cc",
             "https://www.cdngwc.cc",
             "https://www.cdngwc.net",
             "https://www.cdngwc.club",

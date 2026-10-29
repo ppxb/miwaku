@@ -15,24 +15,34 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
+enum class EndpointStatus { Ok, Degraded, Dead }
+
+/**
+ * One `/setting` probe result. Ok and Degraded entries are eligible for the pool; Dead entries
+ * are kept only for diagnostics. A Degraded entry deliberately has no [snapshot]: it responded,
+ * but did not produce a usable /setting payload (WAF page, decrypt failure, 5xx, ...).
+ */
+data class EndpointProbe(
+    val baseUrl: String,
+    val status: EndpointStatus,
+    val latencyMs: Long,
+    val httpStatus: Int? = null,
+    val reason: String? = null,
+    val snapshot: SettingSnapshot? = null,
+)
+
 data class ProbeResult(
     val snapshot: SettingSnapshot,
     val orderedBases: List<String>,
+    val probes: List<EndpointProbe>,
     val latencyMs: Long,
-)
-
-private data class CandidateProbe(
-    val base: String,
-    val snapshot: SettingSnapshot?,
-    val latencyMs: Long,
-    val failureReason: String?,
 )
 
 /**
  * Domain resolver responsible for:
  * 1. Fetching remote dynamic domains from Bytepluses encrypted sources concurrently.
  * 2. Probing candidate base URLs against /setting concurrently (bounded to 6).
- * 3. Sorting healthy candidates by actual response latency and selecting the fastest.
+ * 3. Ranking ok before degraded, each by actual response latency, and dropping dead entries.
  */
 internal class DomainResolver(
     private val httpClient: OkHttpClient,
@@ -53,21 +63,22 @@ internal class DomainResolver(
 
     /**
      * Probes candidate base URLs by hitting /setting concurrently (bounded to [concurrency]).
-     * Filters for valid 200 responses with non-empty img_host and version, records latencies,
-     * and returns the fastest endpoint's snapshot along with ordered fallback bases.
+     * Returns the fastest Ok endpoint's snapshot; degraded endpoints stay in [ProbeResult.orderedBases]
+     * after every Ok endpoint, while dead endpoints are excluded entirely.
      */
     suspend fun probeSetting(
         candidates: List<String>,
         concurrency: Int = DEFAULT_PROBE_CONCURRENCY,
         timeoutMs: Long = PROBE_TIMEOUT_MS,
     ): ProbeResult {
-        if (candidates.isEmpty()) {
+        val unique = candidates.map { it.trim().trimEnd('/') }.filter { it.isNotEmpty() }.distinct()
+        if (unique.isEmpty()) {
             throw ApiFailure.Network("No candidate domains provided")
         }
         val semaphore = Semaphore(concurrency)
         val probes =
             coroutineScope {
-                candidates.map { base ->
+                unique.map { base ->
                     async {
                         semaphore.withPermit {
                             probeSingleSetting(base, timeoutMs)
@@ -76,23 +87,40 @@ internal class DomainResolver(
                 }.awaitAll()
             }
 
-        val successful = probes.filter { it.snapshot != null }.sortedBy { it.latencyMs }
-        if (successful.isEmpty()) {
-            val summary = probes.joinToString("; ") { "${it.base.hostName()}: ${it.failureReason}" }
+        val ranked =
+            probes
+                .filter { it.status != EndpointStatus.Dead && it.baseUrl.isNotEmpty() }
+                .sortedWith(compareBy({ rank(it.status) }, { it.latencyMs }))
+        val winner = ranked.firstOrNull { it.status == EndpointStatus.Ok && it.snapshot != null }
+        if (winner == null) {
+            val summary =
+                probes.joinToString("; ") { probe ->
+                    val detail = probe.reason?.let { " ($it)" }.orEmpty()
+                    "${probe.baseUrl.hostName()}: ${probe.status}$detail"
+                }
             throw ApiFailure.Network(summary.ifEmpty { "setting unavailable" })
         }
-
-        val winner = successful.first()
-        val orderedBases = successful.map { it.base }
+        val orderedBases = ranked.map { it.baseUrl }
         perf {
-            "probed_winner host=${winner.base.hostName()} latency=${winner.latencyMs}ms available=${successful.size}/${candidates.size}"
+            "probed_winner host=${winner.baseUrl.hostName()} latency=${winner.latencyMs}ms " +
+                "ok=${ranked.count { it.status == EndpointStatus.Ok }} " +
+                "degraded=${ranked.count { it.status == EndpointStatus.Degraded }} " +
+                "dead=${probes.count { it.status == EndpointStatus.Dead }}"
         }
         return ProbeResult(
             snapshot = checkNotNull(winner.snapshot),
             orderedBases = orderedBases,
+            probes = probes,
             latencyMs = winner.latencyMs,
         )
     }
+
+    private fun rank(status: EndpointStatus): Int =
+        when (status) {
+            EndpointStatus.Ok -> 0
+            EndpointStatus.Degraded -> 1
+            EndpointStatus.Dead -> 2
+        }
 
     private suspend fun fetchRemoteDomains(
         sources: List<String>,
@@ -155,13 +183,18 @@ internal class DomainResolver(
         }
     }
 
-    private suspend fun probeSingleSetting(base: String, timeoutMs: Long): CandidateProbe {
+    private suspend fun probeSingleSetting(base: String, timeoutMs: Long): EndpointProbe {
         val ts = System.currentTimeMillis() / 1000L
         val start = System.nanoTime()
         return try {
             val url =
                 "$base/setting?app_img_shunt=1&t=$ts".toHttpUrlOrNull()
-                    ?: return CandidateProbe(base, null, Long.MAX_VALUE, "invalid url")
+                    ?: return EndpointProbe(
+                        baseUrl = base,
+                        status = EndpointStatus.Dead,
+                        latencyMs = 0L,
+                        reason = "invalid url",
+                    )
             val request =
                 Request.Builder()
                     .url(url)
@@ -176,29 +209,86 @@ internal class DomainResolver(
             val latency = (System.nanoTime() - start) / 1_000_000L
             response.use { resp ->
                 if (!resp.isSuccessful) {
-                    return CandidateProbe(base, null, latency, "HTTP ${resp.code}")
+                    return EndpointProbe(
+                        baseUrl = base,
+                        status = EndpointStatus.Degraded,
+                        latencyMs = latency,
+                        httpStatus = resp.code,
+                        reason = "HTTP ${resp.code}",
+                    )
                 }
-                val body = resp.body?.string() ?: return CandidateProbe(base, null, latency, "empty body")
+                val body =
+                    resp.body?.string()
+                        ?: return EndpointProbe(
+                            baseUrl = base,
+                            status = EndpointStatus.Degraded,
+                            latencyMs = latency,
+                            httpStatus = resp.code,
+                            reason = "empty body",
+                        )
                 val code = CODE_REGEX.find(body)?.groupValues?.get(1)?.toIntOrNull() ?: -1
                 if (code != 200) {
                     val msg = ERROR_MSG_REGEX.find(body)?.groupValues?.get(1).orEmpty()
-                    return CandidateProbe(base, null, latency, "code $code: $msg")
+                    return EndpointProbe(
+                        baseUrl = base,
+                        status = EndpointStatus.Degraded,
+                        latencyMs = latency,
+                        httpStatus = resp.code,
+                        reason = "code $code: $msg",
+                    )
                 }
-                val data = DATA_REGEX.find(body)?.groupValues?.get(1)
-                    ?: return CandidateProbe(base, null, latency, "missing data field")
-                val decoded = Codec.decodeJson(data, ts)
-                    ?: return CandidateProbe(base, null, latency, "decrypt failed")
+                val data =
+                    DATA_REGEX.find(body)?.groupValues?.get(1)
+                        ?: return EndpointProbe(
+                            baseUrl = base,
+                            status = EndpointStatus.Degraded,
+                            latencyMs = latency,
+                            httpStatus = resp.code,
+                            reason = "missing data field",
+                        )
+                val decoded =
+                    Codec.decodeJson(data, ts)
+                        ?: return EndpointProbe(
+                            baseUrl = base,
+                            status = EndpointStatus.Degraded,
+                            latencyMs = latency,
+                            httpStatus = resp.code,
+                            reason = "decrypt failed",
+                        )
                 val version = VERSION_REGEX.find(decoded)?.groupValues?.get(1).orEmpty().trim()
-                val imageHost = IMG_HOST_REGEX.find(decoded)?.groupValues?.get(1).orEmpty().replace("\\/", "/").trimEnd('/')
+                val imageHost =
+                    IMG_HOST_REGEX.find(decoded)
+                        ?.groupValues
+                        ?.get(1)
+                        .orEmpty()
+                        .replace("\\/", "/")
+                        .trimEnd('/')
                 if (version.isEmpty() || imageHost.isEmpty()) {
-                    return CandidateProbe(base, null, latency, "missing jm3_version/img_host")
+                    return EndpointProbe(
+                        baseUrl = base,
+                        status = EndpointStatus.Degraded,
+                        latencyMs = latency,
+                        httpStatus = resp.code,
+                        reason = "missing jm3_version/img_host",
+                    )
                 }
-                CandidateProbe(base, SettingSnapshot(base, version, imageHost), latency, null)
+                EndpointProbe(
+                    baseUrl = base,
+                    status = EndpointStatus.Ok,
+                    latencyMs = latency,
+                    httpStatus = resp.code,
+                    snapshot = SettingSnapshot(base, version, imageHost),
+                )
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             val latency = (System.nanoTime() - start) / 1_000_000L
-            CandidateProbe(base, null, latency, e.message ?: "network error")
+            EndpointProbe(
+                baseUrl = base,
+                status = EndpointStatus.Dead,
+                latencyMs = latency,
+                reason = e.message ?: "network error",
+            )
         }
     }
 
