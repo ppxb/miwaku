@@ -18,6 +18,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -58,6 +59,7 @@ fun DownloadsScreen(
     val hasQueued = tasks.any { it.state == DownloadState.Queued }
     val completedCount = tasks.count { it.state == DownloadState.Completed }
     var deleteTarget by remember { mutableStateOf<DownloadTask?>(null) }
+    var cancelTarget by remember { mutableStateOf<DownloadTask?>(null) }
     var clearConfirm by remember { mutableStateOf(false) }
 
     Column(modifier.fillMaxSize().statusBarsPadding()) {
@@ -124,13 +126,40 @@ fun DownloadsScreen(
 
         LazyColumn(modifier = Modifier.fillMaxSize()) {
             items(tasks, key = { it.chapterId }) { task ->
-                DownloadRow(task = task, onDelete = { deleteTarget = task })
+                DownloadRow(
+                    task = task,
+                    onDelete = { deleteTarget = task },
+                    onCancel = { cancelTarget = task },
+                )
                 HorizontalDivider(
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
                     modifier = Modifier.padding(start = 20.dp),
                 )
             }
         }
+    }
+
+    cancelTarget?.let { task ->
+        AlertDialog(
+            onDismissRequest = { cancelTarget = null },
+            title = { Text(stringResource(R.string.downloads_cancel_title)) },
+            text = { Text(stringResource(R.string.downloads_cancel_message, task.chapterName)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        manager.cancel(task.chapterId)
+                        cancelTarget = null
+                    },
+                ) {
+                    Text(stringResource(R.string.downloads_cancel_confirm))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { cancelTarget = null }) {
+                    Text(stringResource(R.string.downloads_keep_downloading))
+                }
+            },
+        )
     }
 
     deleteTarget?.let { task ->
@@ -183,6 +212,7 @@ fun DownloadsScreen(
 private fun DownloadRow(
     task: DownloadTask,
     onDelete: () -> Unit,
+    onCancel: () -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp)) {
         Text(
@@ -217,6 +247,15 @@ private fun DownloadRow(
                     Icon(
                         imageVector = Icons.Rounded.DeleteOutline,
                         contentDescription = stringResource(R.string.downloads_delete),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            } else {
+                IconButton(onClick = onCancel, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        imageVector = Icons.Rounded.Close,
+                        contentDescription = stringResource(R.string.downloads_cancel_task),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(18.dp),
                     )

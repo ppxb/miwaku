@@ -16,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -64,6 +65,7 @@ class DownloadManager(
     private val _paused = MutableStateFlow(store.isPaused())
     val isPaused: StateFlow<Boolean> = _paused.asStateFlow()
 
+    @Volatile
     private var worker: Job? = null
 
     /** Bumped on every start/pause so a cancelled worker cannot commit stale state. */
@@ -164,6 +166,39 @@ class DownloadManager(
         persist(force = true)
         scope.launch {
             store.deleteChapter(chapterId)
+        }
+    }
+
+    /**
+     * Stops a queued/running chapter and removes its partial pages. If a worker is active it is
+     * cancelled and any other running chapter is requeued, so the next chapter continues.
+     */
+    fun cancel(chapterId: String) {
+        val snapshot = _tasks.value.firstOrNull { it.chapterId == chapterId } ?: return
+        if (snapshot.state != DownloadState.Queued && snapshot.state != DownloadState.Running) return
+        scope.launch {
+            val current = _tasks.value.firstOrNull { it.chapterId == chapterId } ?: return@launch
+            if (current.state != DownloadState.Queued && current.state != DownloadState.Running) {
+                return@launch
+            }
+            if (worker?.isActive == true) {
+                generation.incrementAndGet()
+                worker?.cancelAndJoin()
+                worker = null
+                _tasks.update { list ->
+                    list.map { task ->
+                        if (task.state == DownloadState.Running) {
+                            task.copy(state = DownloadState.Queued)
+                        } else {
+                            task
+                        }
+                    }
+                }
+            }
+            _tasks.update { list -> list.filterNot { it.chapterId == chapterId } }
+            persist(force = true)
+            store.deleteChapter(chapterId)
+            if (!paused) start()
         }
     }
 

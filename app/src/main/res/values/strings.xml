@@ -64,6 +64,11 @@
     <string name="downloads_clear_completed">清空已完成</string>
     <string name="downloads_clear_completed_message">删除所有已完成任务及其本地文件？</string>
     <string name="downloads_cancel">取消</string>
+    <string name="downloads_cancel_task">取消下载</string>
+    <string name="downloads_cancel_title">停止下载</string>
+    <string name="downloads_cancel_message">停止「%1$s」并删除已下载的部分？</string>
+    <string name="downloads_cancel_confirm">停止并删除</string>
+    <string name="downloads_keep_downloading">继续下载</string>
     <string name="download_notification_channel">下载</string>
     <string name="download_notification_channel_description">章节下载进度</string>
     <string name="download_notification_title">正在下载</string>
