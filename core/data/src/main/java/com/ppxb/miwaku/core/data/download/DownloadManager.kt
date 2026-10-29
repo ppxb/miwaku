@@ -60,13 +60,16 @@ class DownloadManager(
     private val _waitingForWifi = MutableStateFlow(false)
     val waitingForWifi: StateFlow<Boolean> = _waitingForWifi.asStateFlow()
 
+    private val _paused = MutableStateFlow(store.isPaused())
+    val isPaused: StateFlow<Boolean> = _paused.asStateFlow()
+
     private var worker: Job? = null
 
     /** Bumped on every start/pause so a cancelled worker cannot commit stale state. */
     private val generation = AtomicInteger(0)
 
     @Volatile
-    private var paused = store.isPaused()
+    private var paused = _paused.value
 
     @Volatile
     private var lastPersistAt = 0L
@@ -124,12 +127,14 @@ class DownloadManager(
 
     fun resumeAll() {
         paused = false
+        _paused.value = false
         store.setPaused(false)
         start()
     }
 
     fun pauseAll() {
         paused = true
+        _paused.value = true
         store.setPaused(true)
         generation.incrementAndGet()
         worker?.cancel()
