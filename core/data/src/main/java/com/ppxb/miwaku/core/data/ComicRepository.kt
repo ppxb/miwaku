@@ -22,10 +22,10 @@ class ComicRepository internal constructor(
     private val detailStore: ComicDetailCache,
 ) {
     private val detailCache = ConcurrentHashMap<String, CachedDetail>()
-    fun latest(page: Int = 0): List<ComicSummary> =
+    suspend fun latest(page: Int = 0): List<ComicSummary> =
         api.getJson("/latest", mapOf("page" to "$page")).toComicList()
 
-    fun search(query: String): SearchResult {
+    suspend fun search(query: String): SearchResult {
         val payload =
             api.getJson(
                 "/search",
@@ -36,13 +36,13 @@ class ComicRepository internal constructor(
         return SearchResult(json.optInt("total", comics.size), comics)
     }
 
-    fun ranking(order: String, page: Int = 0): List<ComicSummary> =
+    suspend fun ranking(order: String, page: Int = 0): List<ComicSummary> =
         api.getJson(
             "/categories/filter",
             mapOf("page" to "$page", "order" to "", "c" to "", "o" to order),
         ).toComicList()
 
-    fun exploreSections(): List<ExploreSection> {
+    suspend fun exploreSections(): List<ExploreSection> {
         val payload = api.getJson("/promote")
         val array = payload.value as? JSONArray ?: return emptyList()
         return buildList {
@@ -76,7 +76,7 @@ class ComicRepository internal constructor(
                 "オススメ動画サイト",
             )
 
-    fun detail(id: String): ComicDetail {
+    suspend fun detail(id: String): ComicDetail {
         val now = System.currentTimeMillis()
         val cached = detailCache[id]
         if (cached != null && now - cached.at < DETAIL_TTL_MS) {
@@ -106,9 +106,9 @@ class ComicRepository internal constructor(
         return DetailSnapshot(disk.detail, disk.ageMs <= DETAIL_TTL_MS)
     }
 
-    fun refreshDetail(id: String): ComicDetail = fetchDetail(id)
+    suspend fun refreshDetail(id: String): ComicDetail = fetchDetail(id)
 
-    private fun fetchDetail(id: String): ComicDetail {
+    private suspend fun fetchDetail(id: String): ComicDetail {
         val started = ReaderPerf.mark()
         val payload = api.getJson("/album", mapOf("id" to id))
         val json = payload.value as? JSONObject ?: throw IOException("unexpected album payload")
@@ -140,7 +140,7 @@ class ComicRepository internal constructor(
         return detail
     }
 
-    fun chapter(albumId: String, chapterId: String): ChapterContent {
+    suspend fun chapter(albumId: String, chapterId: String): ChapterContent {
         val started = ReaderPerf.mark()
         manifests.get(chapterId)?.let { cached ->
             val host = api.imageHost() ?: cached.imageHost

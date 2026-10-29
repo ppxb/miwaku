@@ -7,6 +7,9 @@ interface SettingSnapshotStore {
 
     fun write(snapshot: SettingSnapshot)
 
+    /** Replaces only the image host; the cached API base and its TTL stay untouched. */
+    fun updateImageHost(imageHost: String)
+
     fun clear()
 }
 
@@ -35,6 +38,10 @@ class SharedSettingSnapshotStore(context: Context) : SettingSnapshotStore {
             .putString(KEY_IMAGE_HOST, snapshot.imageHost)
             .putLong(KEY_SAVED_AT, System.currentTimeMillis())
             .apply()
+    }
+
+    override fun updateImageHost(imageHost: String) {
+        prefs.edit().putString(KEY_IMAGE_HOST, imageHost).apply()
     }
 
     override fun clear() {

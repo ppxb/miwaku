@@ -4,6 +4,14 @@ import android.util.Log
 import java.io.IOException
 import java.util.concurrent.CancellationException
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -21,10 +29,20 @@ data class ApiPayload(
     val imageHost: String,
 )
 
+/**
+ * Single-source JM API client.
+ *
+ * Responsibilities kept here on purpose: the setting snapshot (base/version/image host), the
+ * failure classification, and the failover policy. Interceptors only handle transport concerns.
+ */
 class ApiClient(
     private val httpClient: OkHttpClient = OkHttpClient(),
     private val settingStore: SettingSnapshotStore? = null,
 ) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val settingLock = Mutex()
+    private val imageHostLock = Mutex()
+
     @Volatile
     private var snapshot: SettingSnapshot? = null
 
@@ -32,7 +50,7 @@ class ApiClient(
     private var cacheLoaded = false
 
     @Volatile
-    private var cacheHitLogged = false
+    private var settingJob: Deferred<SettingSnapshot>? = null
 
     @Volatile
     private var lastImageHostRefreshAt = 0L
@@ -49,177 +67,205 @@ class ApiClient(
         return snapshot
     }
 
-    fun fetchSetting(): Result<SettingSnapshot> {
-        cachedSnapshot()?.let {
-            if (!cacheHitLogged) {
-                cacheHitLogged = true
-                perf { "setting_cache_hit host=${it.baseUrl.hostName()}" }
-            }
-            return Result.success(it)
-        }
-        return synchronized(this) {
-            cachedSnapshot()?.let { return@synchronized Result.success(it) }
-            perf { "setting_fetch_start" }
-            val started = System.currentTimeMillis()
-            val failures = mutableListOf<String>()
-            val deadline = System.currentTimeMillis() + TOTAL_TIMEOUT_MS
-
-            for (base in ApiConfig.API_BASES) {
-                val remaining = deadline - System.currentTimeMillis()
-                if (remaining <= 0) break
-
-                val ts = now()
-                val result =
-                    runCatching {
-                        val setting =
-                            requestJson(
-                                base = base,
-                                path = "/setting",
-                                params = mapOf("app_img_shunt" to "1", "t" to "$ts"),
-                                ts = ts,
-                                version = ApiConfig.APP_VERSION,
-                                timeoutMs = minOf(TIMEOUT_MS.toLong(), remaining).toInt(),
-                            ) as? JSONObject ?: throw IOException("unexpected setting payload")
-                        val version = setting.string("jm3_version")
-                        val imageHost = setting.string("img_host").trimEnd('/')
-                        if (version.isEmpty() || imageHost.isEmpty()) {
-                            throw IOException("missing jm3_version/img_host")
+    /**
+     * Returns the current snapshot, fetching `/setting` at most once for concurrent callers.
+     * Unlike the previous implementation this never holds a lock while doing network I/O.
+     */
+    suspend fun ensureSetting(): SettingSnapshot {
+        cachedSnapshot()?.let { return it }
+        val inFlight =
+            settingLock.withLock {
+                cachedSnapshot()?.let { return@withLock null }
+                settingJob?.takeIf { it.isActive }
+                    ?: run {
+                        val job = scope.async(start = CoroutineStart.LAZY) { loadSetting() }
+                        settingJob = job
+                        job.invokeOnCompletion {
+                            if (settingJob === job) settingJob = null
                         }
-                        SettingSnapshot(base, version, imageHost)
+                        job.start()
+                        job
                     }
-                result.getOrNull()?.let {
-                    snapshot = it
-                    cacheHitLogged = false
-                    settingStore?.write(it)
-                    perf {
-                        "setting_fetched host=${it.baseUrl.hostName()} ms=${System.currentTimeMillis() - started}"
-                    }
-                    return Result.success(it)
-                }
-                failures += "${base.hostName()}: ${result.exceptionOrNull()?.message}"
             }
-            perf {
-                "setting_fetch_failed count=${failures.size} ms=${System.currentTimeMillis() - started}"
-            }
-            Result.failure(IOException(failures.joinToString("; ")))
-        }
+        return inFlight?.await() ?: checkNotNull(cachedSnapshot())
     }
 
     fun imageHost(): String? = cachedSnapshot()?.imageHost?.trimEnd('/')
 
-    @Synchronized
-    fun refreshImageHost(): String? {
-        val now = System.currentTimeMillis()
-        if (now - lastImageHostRefreshAt < IMAGE_HOST_REFRESH_THROTTLE_MS) {
-            return snapshot?.imageHost?.trimEnd('/')
+    /**
+     * Probes `/setting` again but only replaces the image host. The API base and its cached
+     * snapshot stay untouched so an image failure never costs an extra API round trip.
+     *
+     * When a probe is already in flight, callers get the cached host instead of waiting: the
+     * download slots must not be held hostage by a slow probe.
+     */
+    suspend fun refreshImageHost(): String? {
+        if (elapsedMs() - lastImageHostRefreshAt < IMAGE_HOST_REFRESH_THROTTLE_MS) {
+            return imageHost()
         }
-        lastImageHostRefreshAt = now
-        snapshot = null
-        cacheHitLogged = false
-        settingStore?.clear()
-        val refreshed = fetchSetting().getOrNull()?.imageHost?.trimEnd('/')
-        perf {
-            "image_host_refresh host=${refreshed?.hostName() ?: "failed"}"
+        if (!imageHostLock.tryLock()) return imageHost()
+        try {
+            if (elapsedMs() - lastImageHostRefreshAt < IMAGE_HOST_REFRESH_THROTTLE_MS) {
+                return imageHost()
+            }
+            lastImageHostRefreshAt = elapsedMs()
+            val probed =
+                try {
+                    probeSetting(IMAGE_HOST_PROBE_TIMEOUT_MS)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: ApiFailure) {
+                    null
+                } ?: return null
+            val updated = (snapshot ?: probed).copy(imageHost = probed.imageHost)
+            snapshot = updated
+            settingStore?.updateImageHost(probed.imageHost)
+            perf { "image_host_refresh host=${probed.imageHost.hostName()}" }
+            return updated.imageHost
+        } finally {
+            imageHostLock.unlock()
         }
-        return refreshed
     }
 
     fun userAgent(): String = ApiConfig.USER_AGENT
 
-    fun getJson(
+    /**
+     * Fetches a decoded API payload. A request is attempted on the current base plus one fallback;
+     * only failures whose [ApiFailure.canFailover] is true move on to the next base.
+     */
+    suspend fun getJson(
         path: String,
         params: Map<String, String> = emptyMap(),
     ): ApiPayload {
-        val setting = fetchSetting().getOrThrow()
-        return try {
-            requestApi(setting, path, params)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: IOException) {
-            clearSetting(setting)
-            val fresh =
-                try {
-                    fetchSetting().getOrThrow()
-                } catch (_: Exception) {
-                    throw e
-                }
-            if (fresh == setting) throw e
-            perf { "api_failover from=${setting.baseUrl.hostName()} to=${fresh.baseUrl.hostName()}" }
+        val setting = ensureSetting()
+        val candidates =
+            buildList {
+                add(setting.baseUrl)
+                ApiConfig.API_BASES.firstOrNull { it != setting.baseUrl }?.let(::add)
+            }
+        var lastFailure: ApiFailure? = null
+        candidates.forEachIndexed { index, base ->
             try {
-                requestApi(fresh, path, params)
-            } catch (retry: CancellationException) {
-                throw retry
-            } catch (retry: IOException) {
-                clearSetting(fresh)
-                throw retry
+                val ts = now()
+                val value =
+                    requestJson(
+                        base = base,
+                        path = path,
+                        params = params + ("t" to "$ts"),
+                        ts = ts,
+                        version = setting.version,
+                        callTimeoutMs = REQUEST_TIMEOUT_MS,
+                    )
+                if (base != setting.baseUrl) adoptBase(base, setting)
+                return ApiPayload(value, setting.imageHost)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: ApiFailure) {
+                lastFailure = e
+                val hasNext = e.canFailover && index < candidates.lastIndex
+                if (!hasNext) throw e
+                NetworkMetrics.recordFailover()
+                perf { "api_failover from=${base.hostName()} reason=${e.message}" }
             }
         }
+        throw lastFailure ?: ApiFailure.Network("no usable base")
     }
 
-    private fun requestApi(
-        setting: SettingSnapshot,
-        path: String,
-        params: Map<String, String>,
-    ): ApiPayload {
-        val ts = now()
-        return ApiPayload(
-            value =
-                requestJson(
-                    base = setting.baseUrl,
-                    path = path,
-                    params = params + ("t" to "$ts"),
-                    ts = ts,
-                    version = setting.version,
-                    timeoutMs = TIMEOUT_MS,
-                ),
-            imageHost = setting.imageHost,
-        )
+    private fun adoptBase(base: String, setting: SettingSnapshot) {
+        if (setting.baseUrl == base) return
+        val updated = (snapshot ?: setting).copy(baseUrl = base)
+        snapshot = updated
+        settingStore?.write(updated)
+        perf { "api_base_adopted host=${base.hostName()}" }
     }
 
-    private fun clearSetting(setting: SettingSnapshot) {
-        if (snapshot === setting) {
-            snapshot = null
-            cacheHitLogged = false
-            settingStore?.clear()
+    private suspend fun probeSetting(budgetMs: Long = SETTING_TOTAL_TIMEOUT_MS): SettingSnapshot {
+        val started = elapsedMs()
+        val deadline = started + budgetMs
+        val failures = mutableListOf<String>()
+        for (base in ApiConfig.API_BASES) {
+            val remaining = deadline - elapsedMs()
+            if (remaining <= 0) break
+            val ts = now()
+            try {
+                val payload =
+                    requestJson(
+                        base = base,
+                        path = "/setting",
+                        params = mapOf("app_img_shunt" to "1", "t" to "$ts"),
+                        ts = ts,
+                        version = ApiConfig.APP_VERSION,
+                        callTimeoutMs = minOf(SETTING_TIMEOUT_MS, remaining),
+                    ) as? JSONObject ?: throw ApiFailure.Decode("unexpected setting payload")
+                val version = payload.string("jm3_version")
+                val imageHost = payload.string("img_host").trimEnd('/')
+                if (version.isEmpty() || imageHost.isEmpty()) {
+                    throw ApiFailure.Decode("missing jm3_version/img_host")
+                }
+                perf { "setting_probed host=${base.hostName()} ms=${elapsedMs() - started}" }
+                return SettingSnapshot(base, version, imageHost)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: ApiFailure) {
+                failures += "${base.hostName()}: ${e.message}"
+            }
         }
+        perf { "setting_failed count=${failures.size}" }
+        throw ApiFailure.Network(failures.joinToString("; ").ifEmpty { "setting unavailable" })
     }
 
-    private fun requestJson(
+    private suspend fun loadSetting(): SettingSnapshot {
+        val started = elapsedMs()
+        val setting = probeSetting()
+        snapshot = setting
+        settingStore?.write(setting)
+        perf { "setting_loaded host=${setting.baseUrl.hostName()} ms=${elapsedMs() - started}" }
+        return setting
+    }
+
+    private suspend fun requestJson(
         base: String,
         path: String,
         params: Map<String, String>,
         ts: Long,
         version: String,
-        timeoutMs: Int,
+        callTimeoutMs: Long,
     ): Any {
-        val body =
-            requestText(
-                base = base,
-                path = path,
-                params = params,
-                ts = ts,
-                version = version,
-                timeoutMs = timeoutMs,
-            )
-        val outer = JSONObject(body)
+        val body = requestText(base, path, params, ts, version, callTimeoutMs)
+        val outer =
+            try {
+                JSONObject(body)
+            } catch (_: Exception) {
+                throw ApiFailure.Decode("invalid envelope")
+            }
         val code = outer.optInt("code", -1)
         if (code != 200) {
-            throw IOException("code $code")
+            val message =
+                sequenceOf("errorMsg", "msg", "message")
+                    .map { outer.optString(it) }
+                    .firstOrNull { it.isNotBlank() && it != "null" }
+                    .orEmpty()
+            throw ApiFailure.Business(code, message)
         }
-        val decoded = Codec.decodeJson(outer.optString("data"), ts)
-            ?: throw IOException("undecodable data")
-        return JSONTokener(decoded).nextValue()
+        val decoded =
+            Codec.decodeJson(outer.optString("data"), ts)
+                ?: throw ApiFailure.Decode("undecodable data")
+        return try {
+            JSONTokener(decoded).nextValue()
+        } catch (_: Exception) {
+            throw ApiFailure.Decode("invalid json")
+        }
     }
 
-    private fun requestText(
+    private suspend fun requestText(
         base: String,
         path: String,
         params: Map<String, String>,
         ts: Long,
         version: String,
-        timeoutMs: Int,
+        callTimeoutMs: Long,
     ): String {
-        val baseUrl = "$base$path".toHttpUrlOrNull() ?: throw IOException("invalid url")
+        val baseUrl = "$base$path".toHttpUrlOrNull() ?: throw ApiFailure.Decode("invalid url")
         val url =
             baseUrl
                 .newBuilder()
@@ -236,12 +282,23 @@ class ApiClient(
                 .header("accept", "*/*")
                 .build()
         val call = httpClient.newCall(request)
-        call.timeout().timeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
-        call.execute().use { response ->
-            if (!response.isSuccessful) {
-                throw IOException("HTTP ${response.code}")
+        call.timeout().timeout(callTimeoutMs, TimeUnit.MILLISECONDS)
+        val response =
+            try {
+                call.await()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: IOException) {
+                throw ApiFailure.Network(e.message ?: "request failed", e)
             }
-            return response.body?.string() ?: throw IOException("empty body")
+        response.use {
+            if (!it.isSuccessful) throw ApiFailure.Http(it.code)
+            val body = it.body ?: throw ApiFailure.Decode("empty body")
+            return try {
+                body.string()
+            } catch (e: IOException) {
+                throw ApiFailure.Network(e.message ?: "body read failed", e)
+            }
         }
     }
 
@@ -251,6 +308,8 @@ class ApiClient(
 
     private fun now(): Long = System.currentTimeMillis() / 1000
 
+    private fun elapsedMs(): Long = System.nanoTime() / 1_000_000L
+
     private fun perf(message: () -> String) {
         if (Log.isLoggable(PERF_TAG, Log.DEBUG)) {
             Log.d(PERF_TAG, message())
@@ -258,8 +317,10 @@ class ApiClient(
     }
 
     private companion object {
-        const val TIMEOUT_MS = 8_000
-        const val TOTAL_TIMEOUT_MS = 15_000L
+        const val SETTING_TIMEOUT_MS = 8_000L
+        const val SETTING_TOTAL_TIMEOUT_MS = 20_000L
+        const val IMAGE_HOST_PROBE_TIMEOUT_MS = 6_000L
+        const val REQUEST_TIMEOUT_MS = 20_000L
         const val IMAGE_HOST_REFRESH_THROTTLE_MS = 30_000L
         const val PERF_TAG = "ReaderPerf"
     }

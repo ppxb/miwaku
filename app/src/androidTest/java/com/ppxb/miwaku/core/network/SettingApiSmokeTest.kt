@@ -2,8 +2,7 @@ package com.ppxb.miwaku.core.network
 
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -12,14 +11,7 @@ import org.junit.runner.RunWith
 class SettingApiSmokeTest {
     @Test
     fun fetchSetting() {
-        val executor = Executors.newSingleThreadExecutor()
-        val snapshot =
-            try {
-                executor.submit<SettingSnapshot> { ApiClient().fetchSetting().getOrThrow() }
-                    .get(40, TimeUnit.SECONDS)
-            } finally {
-                executor.shutdownNow()
-            }
+        val snapshot = runBlocking { ApiClient().ensureSetting() }
 
         Log.i(
             "ApiSmoke",

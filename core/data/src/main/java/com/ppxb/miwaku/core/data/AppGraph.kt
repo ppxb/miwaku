@@ -7,8 +7,13 @@ import com.ppxb.miwaku.core.data.image.ChapterManifestCache
 import com.ppxb.miwaku.core.data.image.PageImageStore
 import com.ppxb.miwaku.core.data.settings.SettingsStore
 import com.ppxb.miwaku.core.network.ApiClient
+import com.ppxb.miwaku.core.network.NetworkMetricsInterceptor
+import com.ppxb.miwaku.core.network.PersistentCookieJar
+import com.ppxb.miwaku.core.network.RateLimitInterceptor
+import com.ppxb.miwaku.core.network.RetryInterceptor
 import com.ppxb.miwaku.core.network.SharedSettingSnapshotStore
 import java.util.concurrent.TimeUnit
+import kotlin.time.Duration.Companion.seconds
 import okhttp3.OkHttpClient
 
 object AppGraph {
@@ -20,22 +25,48 @@ object AppGraph {
 
     val settings: SettingsStore by lazy { SettingsStore(appContext) }
 
-    private val httpClient by lazy {
+    private val cookieJar by lazy { PersistentCookieJar(appContext) }
+
+    /**
+     * Shared transport settings. The API and image clients derive from it so a limit added to one
+     * (rate limiting) can never throttle the other.
+     */
+    private val baseHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(8, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(8, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            .cookieJar(cookieJar)
             .build()
     }
+
+    private val apiHttpClient by lazy {
+        baseHttpClient
+            .newBuilder()
+            .readTimeout(15, TimeUnit.SECONDS)
+            .addInterceptor(RetryInterceptor(maxRetries = 1))
+            .addInterceptor(RateLimitInterceptor(permits = 3, period = 1.seconds))
+            .addInterceptor(NetworkMetricsInterceptor())
+            .build()
+    }
+
+    private val imageHttpClient by lazy {
+        baseHttpClient
+            .newBuilder()
+            .readTimeout(30, TimeUnit.SECONDS)
+            .addInterceptor(RetryInterceptor(maxRetries = 1))
+            .build()
+    }
+
     private val settingStore by lazy { SharedSettingSnapshotStore(appContext) }
-    private val apiClient by lazy { ApiClient(httpClient, settingStore) }
+    private val apiClient by lazy { ApiClient(apiHttpClient, settingStore) }
     private val manifests by lazy { ChapterManifestCache(appContext) }
     private val detailStore by lazy { ComicDetailCache(appContext) }
     val pageStore by lazy {
         PageImageStore(
             context = appContext,
             userAgent = apiClient.userAgent(),
-            httpClient = httpClient,
+            httpClient = imageHttpClient,
             alternateImageHost = { apiClient.refreshImageHost() },
             cacheLimitBytes = { effectiveCacheLimitBytes() },
         )

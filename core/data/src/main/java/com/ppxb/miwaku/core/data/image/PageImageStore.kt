@@ -2,10 +2,12 @@ package com.ppxb.miwaku.core.data.image
 
 import android.content.Context
 import android.graphics.BitmapFactory
+import com.ppxb.miwaku.core.network.ApiFailure
+import com.ppxb.miwaku.core.network.await
 import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
-import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
@@ -54,13 +56,14 @@ class PageImageStore(
     context: Context,
     private val userAgent: String,
     private val httpClient: OkHttpClient,
-    private val alternateImageHost: () -> String? = { null },
+    private val alternateImageHost: suspend () -> String? = { null },
     private val cacheLimitBytes: () -> Long = { DEFAULT_CACHE_LIMIT_BYTES },
 ) {
     private val cacheRoot = File(context.cacheDir, "$CACHE_DIR/v$CACHE_VERSION")
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val downloadSlots = Semaphore(MAX_CONCURRENT_DOWNLOADS)
-    private val inFlight = ConcurrentHashMap<String, Deferred<File>>()
+    private val inFlight = HashMap<String, Flight>()
+    private val flightsLock = Any()
     private val trimming = AtomicBoolean(false)
     private val downloadsSinceTrim = AtomicInteger(0)
     private val sizeKeys = LinkedHashSet<String>()
@@ -93,29 +96,21 @@ class PageImageStore(
             }
 
             try {
-                val key = image.cacheKey
-                var deferred = inFlight[key]
-                if (deferred == null) {
-                    val candidate =
-                        scope.async(start = CoroutineStart.LAZY) {
-                            downloadSlots.withPermit { download(image) }
+                while (true) {
+                    val flight = joinFlight(image)
+                    try {
+                        val file = flight.deferred.await()
+                        if (file.isFile && file.length() > 0) {
+                            return@withContext file
                         }
-                    val existing = inFlight.putIfAbsent(key, candidate)
-                    if (existing == null) {
-                        deferred = candidate
-                        candidate.invokeOnCompletion { inFlight.remove(key, candidate) }
-                        candidate.start()
-                    } else {
-                        candidate.cancel()
-                        deferred = existing
-                    }
-                }
-                deferred.await().let { file ->
-                    if (file.isFile && file.length() > 0) {
-                        file
-                    } else {
                         throw IOException("page file disappeared")
+                    } catch (e: CancellationException) {
+                        // Either this caller was cancelled or the shared flight was dropped by
+                        // its last waiter. The check below tells the two apart.
+                    } finally {
+                        leaveFlight(image, flight)
                     }
+                    currentCoroutineContext().ensureActive()
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -123,7 +118,48 @@ class PageImageStore(
                 ReaderPerf.log { "page_failed key=${image.cacheKey} msg=${e.message}" }
                 throw e
             }
+            throw IOException("page download did not complete")
         }
+
+    private fun joinFlight(image: PageImage): Flight =
+        synchronized(flightsLock) {
+            val key = image.cacheKey
+            val existing = inFlight[key]
+            if (existing != null) {
+                existing.waiters.incrementAndGet()
+                return@synchronized existing
+            }
+            val candidate =
+                scope.async(start = CoroutineStart.LAZY) {
+                    downloadSlots.withPermit { download(image) }
+                }
+            val flight = Flight(candidate)
+            flight.waiters.incrementAndGet()
+            inFlight[key] = flight
+            candidate.invokeOnCompletion {
+                synchronized(flightsLock) {
+                    if (inFlight[key] === flight) inFlight.remove(key)
+                }
+            }
+            candidate.start()
+            flight
+        }
+
+    /**
+     * Drops one waiter and cancels the shared download when nobody is waiting anymore, so a
+     * cancelled prefetch releases its download slot immediately instead of at the call timeout.
+     */
+    private fun leaveFlight(image: PageImage, flight: Flight) {
+        if (flight.waiters.decrementAndGet() > 0) return
+        synchronized(flightsLock) {
+            if (inFlight[image.cacheKey] === flight) inFlight.remove(image.cacheKey)
+        }
+        flight.deferred.cancel()
+    }
+
+    private class Flight(val deferred: Deferred<File>) {
+        val waiters = AtomicInteger(0)
+    }
 
     suspend fun loadCachedSizes(images: List<PageImage>) =
         withContext(Dispatchers.IO) {
@@ -160,7 +196,8 @@ class PageImageStore(
     fun invalidate(image: PageImage) {
         val key = image.cacheKey
         ReaderPerf.log { "page_invalidate key=$key" }
-        inFlight.remove(key)?.cancel()
+        val flight = synchronized(flightsLock) { inFlight.remove(key) }
+        flight?.deferred?.cancel()
         fileFor(image).delete()
         synchronized(sizeLock) {
             _sizes.update { it - key }
@@ -174,8 +211,11 @@ class PageImageStore(
         }.getOrDefault(0L)
 
     fun clearCache() {
-        inFlight.values.forEach { it.cancel() }
-        inFlight.clear()
+        val flights =
+            synchronized(flightsLock) {
+                inFlight.values.toList().also { inFlight.clear() }
+            }
+        flights.forEach { it.deferred.cancel() }
         runCatching {
             cacheRoot.walkTopDown().filter { it.isFile }.forEach { it.delete() }
         }
@@ -196,6 +236,7 @@ class PageImageStore(
                 fetchTo(image.url, temp)
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
+                if (!e.isAlternateHostRetryable()) throw e
                 val retryUrl = alternateUrl(image) ?: throw e
                 ReaderPerf.log {
                     "image_host_retry key=${image.cacheKey} from=${image.url.toHttpUrlOrNull()?.host} to=${retryUrl.toHttpUrlOrNull()?.host}"
@@ -232,43 +273,58 @@ class PageImageStore(
         }
     }
 
-    private fun fetchTo(url: String, temp: File) {
+    private suspend fun fetchTo(url: String, temp: File) {
         val request =
             Request.Builder()
                 .url(url)
                 .header("User-Agent", userAgent)
                 .header("Accept", "image/*")
                 .build()
-        httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw IOException("HTTP ${response.code}")
+        val call = httpClient.newCall(request)
+        call.timeout().timeout(IMAGE_CALL_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        val response =
+            try {
+                call.await()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: IOException) {
+                throw ApiFailure.Network(e.message ?: "image request failed", e)
             }
-            val body = response.body ?: throw IOException("empty body")
+        response.use { res ->
+            if (!res.isSuccessful) throw ApiFailure.Http(res.code)
+            val body = res.body ?: throw ApiFailure.Decode("empty body")
             ReaderPerf.log {
-                "page_http code=${response.code} protocol=${response.protocol} connection=${response.header("Connection")}"
+                "page_http code=${res.code} protocol=${res.protocol} connection=${res.header("Connection")}"
             }
             if (body.contentLength() > MAX_IMAGE_BYTES) {
-                throw IOException("image too large")
+                throw ApiFailure.Decode("image too large")
             }
-            body.byteStream().use { input ->
-                temp.outputStream().buffered().use { output ->
-                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                    var total = 0L
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        total += read
-                        if (total > MAX_IMAGE_BYTES) {
-                            throw IOException("image too large")
+            try {
+                body.byteStream().use { input ->
+                    temp.outputStream().buffered().use { output ->
+                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                        var total = 0L
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            total += read
+                            if (total > MAX_IMAGE_BYTES) {
+                                throw ApiFailure.Decode("image too large")
+                            }
+                            output.write(buffer, 0, read)
                         }
-                        output.write(buffer, 0, read)
                     }
                 }
+            } catch (e: IOException) {
+                throw ApiFailure.Network(e.message ?: "image read failed", e)
             }
         }
     }
 
-    private fun alternateUrl(image: PageImage): String? {
+    private fun Throwable.isAlternateHostRetryable(): Boolean =
+        (this as? ApiFailure)?.canRetryOnAlternateImageHost == true
+
+    private suspend fun alternateUrl(image: PageImage): String? {
         val alternate = alternateImageHost()?.trimEnd('/')?.takeIf { it.isNotBlank() } ?: return null
         val current = image.url.toHttpUrlOrNull() ?: return null
         val replacement = alternate.toHttpUrlOrNull() ?: return null
@@ -394,6 +450,7 @@ class PageImageStore(
         const val CACHE_VERSION = 1
         const val MAX_CONCURRENT_DOWNLOADS = 3
         const val MAX_IMAGE_BYTES = 64L * 1024 * 1024
+        const val IMAGE_CALL_TIMEOUT_MS = 60_000L
         const val DEFAULT_CACHE_LIMIT_BYTES = 1024L * 1024 * 1024
         const val MIN_CACHE_BYTES = 256L * 1024 * 1024
         const val CACHE_FREE_SPACE_DIVISOR = 4L
