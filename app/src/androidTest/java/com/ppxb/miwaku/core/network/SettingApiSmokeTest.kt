@@ -11,13 +11,15 @@ import org.junit.runner.RunWith
 class SettingApiSmokeTest {
     @Test
     fun fetchSetting() {
-        val snapshot = runBlocking { ApiClient().ensureSetting() }
+        val endpoints = runBlocking { ApiClient().endpoints() }
 
         Log.i(
             "ApiSmoke",
-            "base=${snapshot.baseUrl} version=${snapshot.version} imgHost=${snapshot.imageHost}",
+            "base=${endpoints.apiBaseUrl} version=${endpoints.version} " +
+                "apis=${endpoints.hostPool.size} images=${endpoints.imagePool}",
         )
-        assertTrue(snapshot.version.isNotEmpty())
-        assertTrue(snapshot.imageHost.startsWith("https://"))
+        assertTrue(endpoints.version.isNotEmpty())
+        assertTrue(endpoints.hostPool.isNotEmpty())
+        assertTrue(endpoints.imagePool.first().startsWith("https://"))
     }
 }

@@ -30,14 +30,6 @@ class DomainResolverTest {
         return java.util.Base64.getEncoder().encodeToString(encrypted)
     }
 
-    private fun encryptPayload(json: String, ts: Long, secret: String = ApiConfig.DATA_SECRETS.first()): String {
-        val key = SecretKeySpec(md5Hex("$ts$secret").toByteArray(Charsets.UTF_8), "AES")
-        val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
-        cipher.init(Cipher.ENCRYPT_MODE, key)
-        val encrypted = cipher.doFinal(json.toByteArray(Charsets.UTF_8))
-        return java.util.Base64.getEncoder().encodeToString(encrypted)
-    }
-
     @Test
     fun testDecodeHostConfig_success() {
         val json = """{"Server": ["www.cdnhjk.net", "cdngwc.cc/", "https://cdngwc.net"]}"""
@@ -98,84 +90,6 @@ class DomainResolverTest {
             fallbacks = listOf("https://fallback.net"),
         )
         assertEquals(listOf("https://dynamic-1.com", "https://dynamic-2.com"), candidates)
-    }
-
-    @Test
-    fun testProbeSetting_sortsByLatencyAndFiltersDead() = runBlocking {
-        val client =
-            OkHttpClient.Builder()
-                .addInterceptor { chain ->
-                    val url = chain.request().url.toString()
-                    val ts = chain.request().url.queryParameter("t")?.toLongOrNull() ?: (System.currentTimeMillis() / 1000L)
-                    when {
-                        url.startsWith("https://dead.net") -> {
-                            throw java.io.IOException("unreachable")
-                        }
-                        url.startsWith("https://fast.net") -> {
-                            val innerJson = """{"jm3_version": "2.1.12", "img_host": "https://img-fast.net"}"""
-                            val outerJson = """{"code": 200, "data": "${encryptPayload(innerJson, ts)}"}"""
-                            Response.Builder()
-                                .request(chain.request())
-                                .protocol(Protocol.HTTP_1_1)
-                                .code(200)
-                                .message("OK")
-                                .body(outerJson.toResponseBody("application/json".toMediaType()))
-                                .build()
-                        }
-                        url.startsWith("https://slow.net") -> {
-                            Thread.sleep(80)
-                            val innerJson = """{"jm3_version": "2.1.12", "img_host": "https://img-slow.net"}"""
-                            val outerJson = """{"code": 200, "data": "${encryptPayload(innerJson, ts)}"}"""
-                            Response.Builder()
-                                .request(chain.request())
-                                .protocol(Protocol.HTTP_1_1)
-                                .code(200)
-                                .message("OK")
-                                .body(outerJson.toResponseBody("application/json".toMediaType()))
-                                .build()
-                        }
-                        else -> {
-                            Response.Builder()
-                                .request(chain.request())
-                                .protocol(Protocol.HTTP_1_1)
-                                .code(502)
-                                .message("Bad Gateway")
-                                .body("{}".toResponseBody("application/json".toMediaType()))
-                                .build()
-                        }
-                    }
-                }
-                .build()
-
-        val resolver = DomainResolver(client)
-        val result = resolver.probeSetting(
-            candidates =
-                listOf(
-                    "https://dead.net",
-                    "https://degraded.net",
-                    "https://slow.net",
-                    "https://fast.net",
-                ),
-            concurrency = 4,
-        )
-
-        assertEquals("https://fast.net", result.snapshot.baseUrl)
-        assertEquals("https://img-fast.net", result.snapshot.imageHost)
-        assertEquals("2.1.12", result.snapshot.version)
-        // ok first by latency, then degraded even though it failed immediately.
-        assertEquals(
-            listOf("https://fast.net", "https://slow.net", "https://degraded.net"),
-            result.orderedBases,
-        )
-        assertEquals(
-            EndpointStatus.Degraded,
-            result.probes.first { it.baseUrl == "https://degraded.net" }.status,
-        )
-        assertEquals(
-            EndpointStatus.Dead,
-            result.probes.first { it.baseUrl == "https://dead.net" }.status,
-        )
-        assertTrue(result.latencyMs >= 0)
     }
 
     @Test

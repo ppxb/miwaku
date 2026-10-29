@@ -8,23 +8,17 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
 import org.json.JSONTokener
-
-data class SettingSnapshot(
-    val baseUrl: String,
-    val version: String,
-    val imageHost: String,
-)
 
 data class ApiPayload(
     val value: Any,
@@ -34,334 +28,180 @@ data class ApiPayload(
 /**
  * Single-source JM API client.
  *
- * Responsibilities kept here on purpose: the setting snapshot (base/version/image host), the
- * failure classification, and the failover policy. Interceptors only handle transport concerns.
+ * Endpoint handling follows Breeze-plugin-JmComic: [RuntimeEndpoints] is the only place that knows
+ * where the API and the images live. A request uses one base; a failoverable failure drops that base
+ * from the pool and retries the next one exactly once. There is no per-request candidate list and no
+ * background refresh state machine.
  */
 class ApiClient(
     private val httpClient: OkHttpClient = OkHttpClient(),
-    private val settingStore: SettingSnapshotStore? = null,
-    private val poolStore: EndpointPoolStore? = null,
+    private val store: EndpointsStore? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val domainResolver = DomainResolver(httpClient)
-    private val settingLock = Mutex()
-    private val imageHostLock = Mutex()
-    private val poolRefreshLock = Mutex()
+    private val resolver = DomainResolver(httpClient)
+    private val lock = Mutex()
 
     @Volatile
-    private var snapshot: SettingSnapshot? = null
+    private var cached: RuntimeEndpoints? = null
 
     @Volatile
-    private var orderedBases: List<String> = emptyList()
+    private var loadJob: Deferred<RuntimeEndpoints>? = null
 
-    @Volatile
-    private var cacheLoaded = false
-
-    @Volatile
-    private var poolLoaded = false
-
-    @Volatile
-    private var nextPoolRefreshAt = 0L
-
-    @Volatile
-    private var poolRefreshJob: Job? = null
-
-    @Volatile
-    private var lastPoolAttemptAt = 0L
-
-    @Volatile
-    private var lastPoolSuccessAt = 0L
-
-    @Volatile
-    private var settingJob: Deferred<SettingSnapshot>? = null
-
-    @Volatile
-    private var lastImageHostRefreshAt = 0L
-
-    private fun cachedSnapshot(): SettingSnapshot? {
-        if (!cacheLoaded) {
-            synchronized(this) {
-                if (!cacheLoaded) {
-                    snapshot = runCatching { settingStore?.read() }.getOrNull()
-                    cacheLoaded = true
-                }
-            }
-        }
-        if (!poolLoaded) loadPool()
-        return snapshot
-    }
-
-    private fun loadPool() {
-        if (poolLoaded) return
-        synchronized(this) {
-            if (poolLoaded) return
-            val pool = runCatching { poolStore?.read() }.getOrNull()
-            orderedBases = pool?.orderedBases.orEmpty()
-            nextPoolRefreshAt =
-                when {
-                    pool != null -> pool.updatedAt + POOL_TTL_MS
-                    poolStore == null -> Long.MAX_VALUE
-                    else -> 0L
-                }
-            poolLoaded = true
-        }
-    }
-
-    /**
-     * Refreshes the persisted pool in the background when it is missing or older than
-     * [POOL_TTL_MS]. The cached snapshot keeps the first request instant; the refresh replaces it
-     * only after a successful probe.
-     */
-    private fun schedulePoolRefreshIfNeeded() {
-        if (System.currentTimeMillis() < nextPoolRefreshAt) return
-        if (poolRefreshJob?.isActive == true) return
-        poolRefreshJob = scope.launch { refreshPool(force = false) }
-    }
-
-    /**
-     * Returns the current snapshot, fetching `/setting` at most once for concurrent callers.
-     * Unlike the previous implementation this never holds a lock while doing network I/O.
-     */
-    suspend fun ensureSetting(): SettingSnapshot {
-        cachedSnapshot()?.let {
-            schedulePoolRefreshIfNeeded()
-            return it
-        }
+    /** Returns the current snapshot, resolving it at most once for concurrent callers. */
+    suspend fun endpoints(): RuntimeEndpoints {
+        cached?.let { return it }
         val inFlight =
-            settingLock.withLock {
-                cachedSnapshot()?.let { return@withLock null }
-                settingJob?.takeIf { it.isActive }
-                    ?: run {
-                        val job = scope.async(start = CoroutineStart.LAZY) { loadSetting() }
-                        settingJob = job
-                        job.invokeOnCompletion {
-                            if (settingJob === job) settingJob = null
-                        }
-                        job.start()
-                        job
-                    }
+            lock.withLock {
+                cached?.let { return@withLock null }
+                val stored = withContext(Dispatchers.IO) { store?.read() }
+                if (stored != null) {
+                    cached = stored
+                    return@withLock null
+                }
+                loadJob?.takeIf { it.isActive } ?: startResolve()
             }
-        return inFlight?.await() ?: checkNotNull(cachedSnapshot())
+        return inFlight?.await() ?: checkNotNull(cached)
     }
 
-    fun imageHost(): String? = cachedSnapshot()?.imageHost?.trimEnd('/')
+    fun imageHost(): String? = cached?.imageBaseUrl?.takeIf { it.isNotBlank() }
 
     /**
-     * Probes `/setting` again but only replaces the image host. The API base and its cached
-     * snapshot stay untouched so an image failure never costs an extra API round trip.
-     *
-     * When a probe is already in flight, callers get the cached host instead of waiting: the
-     * download slots must not be held hostage by a slow probe.
+     * Rotates the image pool after a network-level image failure and returns the new head, or null
+     * when there is nothing left to try. The API base is untouched: an image host outage must never
+     * cost an API round trip.
      */
-    suspend fun refreshImageHost(): String? {
-        if (elapsedMs() - lastImageHostRefreshAt < IMAGE_HOST_REFRESH_THROTTLE_MS) {
-            return imageHost()
+    suspend fun rotateImageHost(): String? =
+        lock.withLock {
+            val current = cached ?: return@withLock null
+            if (current.imagePool.size <= 1) return@withLock null
+            val remaining = current.imagePool.drop(1)
+            val next = current.copy(imagePool = remaining)
+            cached = next
+            store?.write(next)
+            perf { "image_host_rotated host=${remaining.first().hostName()}" }
+            remaining.firstOrNull()
         }
-        if (!imageHostLock.tryLock()) return imageHost()
-        try {
-            if (elapsedMs() - lastImageHostRefreshAt < IMAGE_HOST_REFRESH_THROTTLE_MS) {
-                return imageHost()
-            }
-            lastImageHostRefreshAt = elapsedMs()
-            val candidates =
-                if (orderedBases.isNotEmpty()) {
-                    orderedBases
-                } else {
-                    domainResolver.resolveCandidateDomains()
-                }
-            val probed =
-                try {
-                    val result =
-                        domainResolver.probeSetting(
-                            candidates = candidates,
-                            timeoutMs = IMAGE_HOST_PROBE_TIMEOUT_MS,
-                        )
-                    orderedBases = result.orderedBases
-                    persistPool()
-                    result.snapshot
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: ApiFailure) {
-                    null
-                } ?: return null
-            val updated = (snapshot ?: probed).copy(imageHost = probed.imageHost)
-            snapshot = updated
-            settingStore?.updateImageHost(probed.imageHost)
-            perf { "image_host_refresh host=${probed.imageHost.hostName()}" }
-            return updated.imageHost
-        } finally {
-            imageHostLock.unlock()
-        }
-    }
 
     fun userAgent(): String = ApiConfig.USER_AGENT
 
     /**
-     * Fetches a decoded API payload. The current pool is tried in order; if every base fails with
-     * a failoverable error, the remote host list is refreshed and the new pool gets one retry.
+     * Fetches a decoded API payload. A failoverable failure moves to the next base once; a business
+     * error is thrown untouched because another base would answer the same way.
      */
     suspend fun getJson(
         path: String,
         params: Map<String, String> = emptyMap(),
     ): ApiPayload {
-        val setting = ensureSetting()
+        val current = endpoints()
         return try {
-            requestAcrossCandidates(setting, path, params)
+            requestOnce(current, path, params)
         } catch (e: ApiFailure) {
             if (!e.canFailover) throw e
-            if (!refreshPool(force = true)) throw e
-            val updated = cachedSnapshot() ?: setting
-            requestAcrossCandidates(updated, path, params)
+            val next = dropApiBase(current.apiBaseUrl) ?: reResolve(current) ?: throw e
+            perf {
+                "api_failover from=${current.apiBaseUrl.hostName()} " +
+                    "to=${next.apiBaseUrl.hostName()} reason=${e.message}"
+            }
+            requestOnce(next, path, params)
         }
     }
 
-    private suspend fun requestAcrossCandidates(
-        setting: SettingSnapshot,
+    private suspend fun requestOnce(
+        endpoints: RuntimeEndpoints,
         path: String,
         params: Map<String, String>,
     ): ApiPayload {
-        var lastFailure: ApiFailure? = null
-        val candidates = buildCandidates(setting)
-        candidates.forEachIndexed { index, base ->
-            try {
-                val ts = now()
-                val value =
-                    requestJson(
-                        base = base,
-                        path = path,
-                        params = params + ("t" to "$ts"),
-                        ts = ts,
-                        version = setting.version,
-                        callTimeoutMs = REQUEST_TIMEOUT_MS,
-                    )
-                if (base != setting.baseUrl) adoptBase(base, setting)
-                return ApiPayload(value, setting.imageHost)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: ApiFailure) {
-                lastFailure = e
-                if (!e.canFailover) throw e
-                dropBase(base)
-                if (index < candidates.lastIndex) NetworkMetrics.recordFailover()
-                perf { "api_failover from=${base.hostName()} reason=${e.message}" }
-            }
-        }
-        throw lastFailure ?: ApiFailure.Network("no usable base")
+        val ts = now()
+        val value =
+            requestJson(
+                base = endpoints.apiBaseUrl,
+                path = path,
+                params = params + ("t" to "$ts"),
+                ts = ts,
+                version = endpoints.version,
+            )
+        return ApiPayload(value, endpoints.imageBaseUrl)
     }
 
-    private fun buildCandidates(setting: SettingSnapshot): List<String> =
-        buildList {
-            // The probed pool is more trustworthy than a snapshot base that may have gone stale.
-            addAll(orderedBases)
-            add(setting.baseUrl)
-            addAll(ApiConfig.API_BASES)
-        }.map { it.trim().trimEnd('/') }
-            .filter { it.isNotEmpty() }
-            .distinct()
-
-    private fun adoptBase(base: String, setting: SettingSnapshot) {
-        if (setting.baseUrl == base) return
-        val updated = (snapshot ?: setting).copy(baseUrl = base)
-        snapshot = updated
-        settingStore?.write(updated)
-        if (orderedBases.firstOrNull() != base) {
-            orderedBases = listOf(base) + orderedBases.filterNot { it == base }
-            poolStore?.write(EndpointPool(orderedBases, System.currentTimeMillis()))
-        }
-        perf { "api_base_adopted host=${base.hostName()}" }
-    }
-
-    private suspend fun loadSetting(): SettingSnapshot {
+    private fun startResolve(): Deferred<RuntimeEndpoints> {
         val started = elapsedMs()
-        val probeResult = domainResolver.probeSetting(resolveCandidates())
-        orderedBases = probeResult.orderedBases
-        persistPool()
-        nextPoolRefreshAt = System.currentTimeMillis() + POOL_TTL_MS
-        val setting = probeResult.snapshot
-        snapshot = setting
-        settingStore?.write(setting)
-        perf {
-            "setting_loaded host=${setting.baseUrl.hostName()} latency=${probeResult.latencyMs}ms " +
-                "available=${probeResult.orderedBases.size} ms=${elapsedMs() - started}"
-        }
-        return setting
-    }
-
-    /**
-     * Resolves the remote domain list and combines it with the persisted pool and compile-time
-     * fallbacks. Remote entries come first so a stale cached base cannot starve a newly published
-     * one during probing.
-     */
-    private suspend fun resolveCandidates(): List<String> {
-        val remote =
-            try {
-                domainResolver.resolveCandidateDomains()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                emptyList()
-            }
-        return (remote + orderedBases + ApiConfig.API_BASES)
-            .map { it.trim().trimEnd('/') }
-            .filter { it.isNotEmpty() }
-            .distinct()
-    }
-
-    private fun persistPool() {
-        poolStore?.write(EndpointPool(orderedBases, System.currentTimeMillis()))
-    }
-
-    private fun dropBase(base: String) {
-        val normalized = base.trim().trimEnd('/')
-        if (normalized !in orderedBases) return
-        orderedBases = orderedBases.filterNot { it == normalized }
-        poolStore?.write(EndpointPool(orderedBases, System.currentTimeMillis()))
-    }
-
-    /**
-     * Re-resolves remote domains and probes the whole pool. The cached snapshot stays usable while
-     * this runs; only a successful probe replaces it. Failures retry after [POOL_RETRY_MS].
-     */
-    private suspend fun refreshPool(force: Boolean): Boolean {
-        if (!force && System.currentTimeMillis() < nextPoolRefreshAt) return false
-        val waitStarted = System.currentTimeMillis()
-        return poolRefreshLock.withLock {
-            // If another refresh completed while this caller was waiting, reuse its result instead
-            // of probing the same outage again.
-            if (force && lastPoolAttemptAt > waitStarted) {
-                return@withLock lastPoolSuccessAt > waitStarted
-            }
-            if (force &&
-                lastPoolAttemptAt > lastPoolSuccessAt &&
-                System.currentTimeMillis() < nextPoolRefreshAt
-            ) {
-                return@withLock false
-            }
-            if (!force && System.currentTimeMillis() < nextPoolRefreshAt) return@withLock false
-            try {
-                val probeResult = domainResolver.probeSetting(resolveCandidates())
-                orderedBases = probeResult.orderedBases
-                persistPool()
-                val updated = probeResult.snapshot
-                snapshot = updated
-                settingStore?.write(updated)
-                nextPoolRefreshAt = System.currentTimeMillis() + POOL_TTL_MS
-                lastPoolAttemptAt = System.currentTimeMillis()
-                lastPoolSuccessAt = lastPoolAttemptAt
+        val job =
+            scope.async(start = CoroutineStart.LAZY) {
+                val api = resolver.resolveApiBase()
+                // The image candidates come straight from /setting and are usable as-is, so the
+                // first request does not wait for the image probe. The pool is upgraded right after.
+                val initial =
+                    RuntimeEndpoints(
+                        apiBaseUrl = api.apiBaseUrl,
+                        version = api.version,
+                        imagePool = api.imageCandidates,
+                        hostPool = api.hostPool,
+                        updatedAt = System.currentTimeMillis(),
+                    )
+                cached = initial
+                store?.write(initial)
                 perf {
-                    "pool_refreshed host=${updated.baseUrl.hostName()} " +
-                        "available=${probeResult.orderedBases.size}"
+                    "endpoints_resolved host=${api.apiBaseUrl.hostName()} " +
+                        "apis=${api.hostPool.size} images=${api.imageCandidates.size} " +
+                        "ms=${elapsedMs() - started}"
                 }
-                true
+                scope.launch { upgradeImagePool(initial) }
+                initial
+            }
+        loadJob = job
+        job.invokeOnCompletion { if (loadJob === job) loadJob = null }
+        job.start()
+        return job
+    }
+
+    /**
+     * Replaces the unprobed image candidates with the ones that actually answered. Skipped when the
+     * snapshot moved on in the meantime (rotated after a failure, or re-resolved).
+     */
+    private suspend fun upgradeImagePool(initial: RuntimeEndpoints) {
+        val ordered = resolver.orderImagePool(initial.imagePool)
+        if (ordered.isEmpty()) return
+        lock.withLock {
+            val current = cached ?: return@withLock
+            if (current.apiBaseUrl != initial.apiBaseUrl) return@withLock
+            if (current.imagePool != initial.imagePool) return@withLock
+            val next = current.copy(imagePool = ordered)
+            cached = next
+            store?.write(next)
+        }
+    }
+
+    /** Drops [failed] from the pool and promotes the next base. Returns null when nothing is left. */
+    private suspend fun dropApiBase(failed: String): RuntimeEndpoints? =
+        lock.withLock {
+            val current = cached ?: return@withLock null
+            if (current.hostPool.size <= 1) return@withLock null
+            val remaining = current.hostPool.filterNot { it == failed }
+            if (remaining.isEmpty() || remaining.size == current.hostPool.size) return@withLock null
+            val next = current.copy(apiBaseUrl = remaining.first(), hostPool = remaining)
+            cached = next
+            store?.write(next)
+            next
+        }
+
+    /**
+     * The pool ran dry: probe the domain list from scratch once before giving up. If another caller
+     * already refreshed while this request was in flight, its snapshot is reused.
+     */
+    private suspend fun reResolve(stale: RuntimeEndpoints): RuntimeEndpoints? =
+        lock.withLock {
+            val current = cached
+            if (current != null && current.updatedAt > stale.updatedAt) return@withLock current
+            cached = null
+            val job = loadJob?.takeIf { it.isActive } ?: startResolve()
+            try {
+                job.await()
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                nextPoolRefreshAt = System.currentTimeMillis() + POOL_RETRY_MS
-                lastPoolAttemptAt = System.currentTimeMillis()
-                false
+                null
             }
         }
-    }
 
     private suspend fun requestJson(
         base: String,
@@ -369,21 +209,23 @@ class ApiClient(
         params: Map<String, String>,
         ts: Long,
         version: String,
-        callTimeoutMs: Long,
     ): Any {
-        val body = requestText(base, path, params, ts, version, callTimeoutMs)
+        val body = requestText(base, path, params, ts, version)
         val outer =
             try {
                 JSONObject(body)
             } catch (_: Exception) {
                 throw ApiFailure.Decode("invalid envelope")
             }
+        // A gateway/WAF JSON page has no `code` field. Treating it as a business error would make
+        // the failure terminal and keep the request on a poisoned base; a decode failure fails over.
+        if (!outer.has("code")) throw ApiFailure.Decode("not an envelope")
         val code = outer.optInt("code", -1)
         if (code != 200) {
             val message =
                 sequenceOf("errorMsg", "msg", "message")
-                    .map { outer.optString(it) }
-                    .firstOrNull { it.isNotBlank() && it != "null" }
+                    .map { outer.text(it) }
+                    .firstOrNull { it.isNotBlank() }
                     .orEmpty()
             throw ApiFailure.Business(code, message)
         }
@@ -403,7 +245,6 @@ class ApiClient(
         params: Map<String, String>,
         ts: Long,
         version: String,
-        callTimeoutMs: Long,
     ): String {
         val baseUrl = "$base$path".toHttpUrlOrNull() ?: throw ApiFailure.Decode("invalid url")
         val url =
@@ -422,7 +263,7 @@ class ApiClient(
                 .header("accept", "*/*")
                 .build()
         val call = httpClient.newCall(request)
-        call.timeout().timeout(callTimeoutMs, TimeUnit.MILLISECONDS)
+        call.timeout().timeout(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         val response =
             try {
                 call.await()
@@ -442,7 +283,7 @@ class ApiClient(
         }
     }
 
-    private fun JSONObject.string(key: String): String = if (isNull(key)) "" else optString(key)
+    private fun JSONObject.text(key: String): String = if (isNull(key)) "" else optString(key)
 
     private fun String.hostName(): String = toHttpUrlOrNull()?.host ?: this
 
@@ -461,11 +302,7 @@ class ApiClient(
     }
 
     private companion object {
-        const val IMAGE_HOST_PROBE_TIMEOUT_MS = 6_000L
         const val REQUEST_TIMEOUT_MS = 20_000L
-        const val IMAGE_HOST_REFRESH_THROTTLE_MS = 30_000L
-        const val POOL_TTL_MS = 30 * 60 * 1000L
-        const val POOL_RETRY_MS = 60 * 1000L
         const val PERF_TAG = "ReaderPerf"
     }
 }

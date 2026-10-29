@@ -36,4 +36,4 @@ Thumbs.db
 # Tooling
 .vscode/
 .fleet/
-backups
+/backups/

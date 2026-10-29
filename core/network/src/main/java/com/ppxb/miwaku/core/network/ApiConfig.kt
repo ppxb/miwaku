@@ -11,6 +11,9 @@ internal object ApiConfig {
             "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/91.0.4472.114 " +
             "Safari/537.36"
 
+    /** Tiny placeholder every image host serves; a 2xx with a body proves the CDN is usable. */
+    const val IMAGE_PROBE_PATH = "/media/users/nopic-.gif?v=0"
+
     val DOMAIN_CONFIG_URLS =
         listOf(
             "https://rup4a04-c01.tos-ap-southeast-1.bytepluses.com/newsvr-2025.txt",
