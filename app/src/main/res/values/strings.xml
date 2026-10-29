@@ -77,6 +77,10 @@
     <string name="download_notification_pages">%1$d/%2$d 页</string>
     <string name="download_notification_more">还有 %1$d 章</string>
     <string name="download_notification_pause">暂停</string>
+    <string name="download_notification_complete">下载完成</string>
+    <string name="download_notification_failed">下载失败</string>
+    <string name="download_notification_complete_count">%1$d 章已下载</string>
+    <string name="download_notification_complete_failed">%1$d 章完成，%2$d 章失败</string>
     <string name="detail_downloaded">已下载</string>
     <string name="detail_more">更多</string>
     <string name="detail_refresh">刷新</string>

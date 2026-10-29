@@ -41,9 +41,12 @@ class DownloadService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
+        // A new run replaces the previous run's "finished" card.
+        NotificationManagerCompat.from(this).cancel(COMPLETION_NOTIFICATION_ID)
         startForegroundCompat(preparingNotification())
 
         val manager = AppGraph.downloadManager
+        val sessionIds = linkedSetOf<String>()
         scope.launch {
             combine(
                 manager.tasks,
@@ -57,11 +60,31 @@ class DownloadService : Service() {
                         tasks.filter {
                             it.state == DownloadState.Queued || it.state == DownloadState.Running
                         }
-                    if (paused || active.isEmpty()) {
+                    if (paused) {
                         stopForegroundCompat()
                         stopSelf()
                         return@collect
                     }
+                    if (active.isEmpty()) {
+                        // Count every chapter seen active in this service session. A cancelled
+                        // chapter disappears from the list, which suppresses the completion notice.
+                        val finished =
+                            sessionIds.mapNotNull { id ->
+                                tasks.firstOrNull { it.chapterId == id }
+                            }
+                        val naturallyFinished =
+                            sessionIds.isNotEmpty() &&
+                                finished.size == sessionIds.size &&
+                                finished.all {
+                                    it.state == DownloadState.Completed ||
+                                        it.state == DownloadState.Failed
+                                }
+                        if (naturallyFinished) notifyCompletion(finished)
+                        stopForegroundCompat()
+                        stopSelf()
+                        return@collect
+                    }
+                    sessionIds += active.map { it.chapterId }
                     updateNotification(summarize(active, waitingForWifi))
                 }
         }
@@ -112,6 +135,37 @@ class DownloadService : Service() {
             builder.setSubText(summary.more)
         }
         NotificationManagerCompat.from(this).notify(NOTIFICATION_ID, builder.build())
+    }
+
+    private fun notifyCompletion(finished: List<DownloadTask>) {
+        if (!canPostNotifications()) return
+        val completed = finished.count { it.state == DownloadState.Completed }
+        val failed = finished.count { it.state == DownloadState.Failed }
+        if (completed == 0 && failed == 0) return
+        val title =
+            if (completed == 0) {
+                getString(R.string.download_notification_failed)
+            } else {
+                getString(R.string.download_notification_complete)
+            }
+        val text =
+            if (failed > 0) {
+                getString(R.string.download_notification_complete_failed, completed, failed)
+            } else {
+                getString(R.string.download_notification_complete_count, completed)
+            }
+        val notification =
+            NotificationCompat.Builder(this, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_stat_download)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setContentIntent(openAppIntent())
+                .setAutoCancel(true)
+                .setOngoing(false)
+                .setOnlyAlertOnce(true)
+                .setCategory(NotificationCompat.CATEGORY_STATUS)
+                .build()
+        NotificationManagerCompat.from(this).notify(COMPLETION_NOTIFICATION_ID, notification)
     }
 
     private fun summarize(active: List<DownloadTask>, waitingForWifi: Boolean): Summary {
@@ -219,6 +273,7 @@ class DownloadService : Service() {
     companion object {
         private const val CHANNEL_ID = "downloads"
         private const val NOTIFICATION_ID = 1001
+        private const val COMPLETION_NOTIFICATION_ID = 1002
         private const val ACTION_PAUSE = "com.ppxb.miwaku.download.PAUSE"
 
         fun start(context: Context) {
