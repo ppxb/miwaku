@@ -2,6 +2,7 @@ package com.ppxb.miwaku.core.data
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import com.ppxb.miwaku.core.data.download.DownloadManager
 import com.ppxb.miwaku.core.data.download.DownloadStore
@@ -94,14 +95,17 @@ object AppGraph {
         ComicRepository(apiClient, manifests, detailStore, downloadStore)
     }
     val downloadManager by lazy {
-        DownloadManager(
-            httpClient = imageHttpClient,
-            api = apiClient,
-            comics = comics,
-            store = downloadStore,
-            settings = settings,
-            networkAllowed = { !settings.wifiOnlyDownloads.value || isUnmetered() },
-        )
+        val manager =
+            DownloadManager(
+                httpClient = imageHttpClient,
+                api = apiClient,
+                comics = comics,
+                store = downloadStore,
+                settings = settings,
+                networkAllowed = { !settings.wifiOnlyDownloads.value || isUnmetered() },
+            )
+        watchDownloadNetwork(manager)
+        manager
     }
     val history: HistoryStore by lazy { HistoryStore(appContext) }
     val favorites: FavoritesStore by lazy { FavoritesStore(appContext) }
@@ -149,6 +153,27 @@ object AppGraph {
             val capabilities = manager.getNetworkCapabilities(manager.activeNetwork) ?: return false
             capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
         }.getOrDefault(false)
+
+    /** Resume a Wi-Fi-only queue as soon as an unmetered network appears. */
+    private fun watchDownloadNetwork(manager: DownloadManager) {
+        val connectivity = appContext.getSystemService(ConnectivityManager::class.java) ?: return
+        runCatching {
+            connectivity.registerDefaultNetworkCallback(
+                object : ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: Network) {
+                        manager.onNetworkAvailable()
+                    }
+
+                    override fun onCapabilitiesChanged(
+                        network: Network,
+                        networkCapabilities: NetworkCapabilities,
+                    ) {
+                        manager.onNetworkAvailable()
+                    }
+                },
+            )
+        }
+    }
 
     private const val LOW_MEMORY_CACHE_LIMIT_MB = 256
 }

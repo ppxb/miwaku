@@ -18,14 +18,16 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.ppxb.miwaku.core.data.AppGraph
 import com.ppxb.miwaku.core.data.download.DownloadState
 import com.ppxb.miwaku.core.data.settings.ThemeMode
+import com.ppxb.miwaku.download.DownloadService
 import com.ppxb.miwaku.ui.MiwakuApp
 import com.ppxb.miwaku.ui.theme.MiwakuTheme
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val settings by lazy { AppGraph.settings }
+    private var notificationPermissionRequested = false
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
 
@@ -34,14 +36,19 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.RESUMED) {
-                AppGraph.downloadManager.tasks
-                    .map { tasks ->
+                val downloads = AppGraph.downloadManager
+                combine(downloads.tasks, downloads.isPaused) { tasks, paused ->
+                    !paused &&
                         tasks.any {
                             it.state == DownloadState.Queued || it.state == DownloadState.Running
                         }
-                    }.distinctUntilChanged()
+                }.distinctUntilChanged()
                     .collect { active ->
-                        if (active) requestNotificationPermission()
+                        if (active) {
+                            // Activity is resumed here, so Android 12+ allows a dataSync FGS start.
+                            DownloadService.start(this@MainActivity)
+                            requestNotificationPermission()
+                        }
                     }
             }
         }
@@ -90,12 +97,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestNotificationPermission() {
+        if (notificationPermissionRequested) return
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
         ) {
             return
         }
+        notificationPermissionRequested = true
         notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 }

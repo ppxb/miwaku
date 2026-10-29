@@ -132,6 +132,11 @@ class DownloadManager(
         start()
     }
 
+    /** Called when a network becomes available; only does work if the queue was waiting for it. */
+    fun onNetworkAvailable() {
+        if (_waitingForWifi.value) start()
+    }
+
     fun pauseAll() {
         paused = true
         _paused.value = true

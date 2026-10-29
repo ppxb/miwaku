@@ -36,6 +36,7 @@ import kotlinx.coroutines.launch
  */
 class DownloadService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var foregroundStarted = false
 
     override fun onCreate() {
         super.onCreate()
@@ -57,7 +58,7 @@ class DownloadService : Service() {
                             it.state == DownloadState.Queued || it.state == DownloadState.Running
                         }
                     if (paused || active.isEmpty()) {
-                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopForegroundCompat()
                         stopSelf()
                         return@collect
                     }
@@ -69,9 +70,14 @@ class DownloadService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_PAUSE) {
             AppGraph.downloadManager.pauseAll()
-            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopForegroundCompat()
             stopSelf()
             return START_NOT_STICKY
+        }
+        // A start can arrive on an instance that already called stopForeground() (pause then
+        // immediate resume). AMS still requires this start to enter foreground within 5 seconds.
+        if (!foregroundStarted) {
+            startForegroundCompat(preparingNotification())
         }
         return START_STICKY
     }
@@ -158,6 +164,12 @@ class DownloadService : Service() {
                 0
             }
         ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, type)
+        foregroundStarted = true
+    }
+
+    private fun stopForegroundCompat() {
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        foregroundStarted = false
     }
 
     private fun createChannel() {
@@ -215,6 +227,10 @@ class DownloadService : Service() {
                     context,
                     Intent(context, DownloadService::class.java),
                 )
+            }.onFailure { failure ->
+                if (failure is IllegalStateException) {
+                    android.util.Log.w("DownloadService", "foreground start was blocked", failure)
+                }
             }
         }
     }

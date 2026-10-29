@@ -110,7 +110,7 @@
     <string name="settings_download_concurrency_summary">每章 %1$d 张并发</string>
     <string name="settings_download_concurrency_option">%1$d 张</string>
     <string name="settings_wifi_only_downloads">仅 Wi-Fi 下载</string>
-    <string name="settings_wifi_only_downloads_description">移动网络下暂停队列，连接 Wi-Fi 后手动继续</string>
+    <string name="settings_wifi_only_downloads_description">移动网络下暂停队列，连接 Wi-Fi 后自动继续</string>
     <string name="settings_network_stats">网络请求统计</string>
     <string name="settings_network_stats_summary">请求 %1$d · 失败 %2$d · 重试 %3$d</string>
     <string name="settings_network_stats_description">自本次启动以来的累计值，不含缓存命中</string>

@@ -6,13 +6,9 @@ import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import com.ppxb.miwaku.core.data.AppGraph
-import com.ppxb.miwaku.core.data.download.DownloadState
-import com.ppxb.miwaku.download.DownloadService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 class MiwakuApplication : Application(), ImageLoaderFactory {
@@ -43,20 +39,6 @@ class MiwakuApplication : Application(), ImageLoaderFactory {
         AppGraph.init(this)
         // Restore queued chapters off the main thread; the manager reads its task list from disk.
         appScope.launch { AppGraph.downloadManager }
-        // The queue lives in this process, so a foreground service is what keeps it alive when the
-        // activity is gone. The service itself stops once nothing is queued/running or on pause.
-        appScope.launch {
-            val manager = AppGraph.downloadManager
-            combine(manager.tasks, manager.isPaused) { tasks, paused ->
-                !paused &&
-                    tasks.any {
-                        it.state == DownloadState.Queued || it.state == DownloadState.Running
-                    }
-            }.distinctUntilChanged()
-                .collect { active ->
-                    if (active) DownloadService.start(this@MiwakuApplication)
-                }
-        }
     }
 
     override fun newImageLoader(): ImageLoader = imageLoader
