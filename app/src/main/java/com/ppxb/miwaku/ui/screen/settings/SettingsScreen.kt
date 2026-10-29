@@ -39,6 +39,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -60,6 +61,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.ppxb.miwaku.R
 import com.ppxb.miwaku.core.data.AppGraph
+import com.ppxb.miwaku.core.data.download.DownloadState
 import com.ppxb.miwaku.core.data.NetworkStats
 import com.ppxb.miwaku.core.data.settings.ThemeMode
 import com.ppxb.miwaku.ui.component.AmbientGlow
@@ -110,6 +112,7 @@ fun SettingsScreen(
     var showNetworkStatsDialog by rememberSaveable { mutableStateOf(false) }
     var networkStats by remember { mutableStateOf<NetworkStats?>(null) }
     var cacheSize by remember { mutableStateOf<Long?>(null) }
+    var downloadSize by remember { mutableStateOf<Long?>(null) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
@@ -126,6 +129,16 @@ fun SettingsScreen(
 
     LaunchedEffect(Unit) {
         cacheSize = withContext(Dispatchers.IO) { AppGraph.readerCacheSizeBytes() }
+    }
+    // Recompute when a completed/failed task is added, removed, or replaced; not on page updates.
+    val downloadTasks by AppGraph.downloadManager.tasks.collectAsState()
+    val finishedDownloads =
+        downloadTasks
+            .filter {
+                it.state == DownloadState.Completed || it.state == DownloadState.Failed
+            }.map { it.chapterId }
+    LaunchedEffect(finishedDownloads) {
+        downloadSize = withContext(Dispatchers.IO) { AppGraph.downloadStore.downloadSizeBytes() }
     }
 
     Box(modifier.fillMaxSize()) {
@@ -245,12 +258,16 @@ fun SettingsScreen(
                                 subtitle = stringResource(R.string.settings_wifi_only_downloads_description),
                                 switch = wifiOnlyDownloads to onWifiOnlyDownloadsChange,
                             )
+                            val downloadUsage =
+                                downloadSize?.let { Formatter.formatShortFileSize(context, it) }
+                                    ?: stringResource(R.string.settings_download_usage_loading)
                             val downloadLimitSubtitle =
                                 if (downloadLimitMb <= 0) {
-                                    stringResource(R.string.settings_download_limit_no_limit)
+                                    stringResource(R.string.settings_download_limit_no_limit, downloadUsage)
                                 } else {
                                     stringResource(
                                         R.string.settings_download_limit_summary,
+                                        downloadUsage,
                                         cacheLimitLabel(downloadLimitMb),
                                     )
                                 }

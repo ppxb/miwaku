@@ -125,8 +125,9 @@
     <string name="settings_download_concurrency_summary">每章 %1$d 张并发</string>
     <string name="settings_download_concurrency_option">%1$d 张</string>
     <string name="settings_download_limit">下载存储上限</string>
-    <string name="settings_download_limit_summary">%1$s · 超出后自动清理最旧章节</string>
-    <string name="settings_download_limit_no_limit">不限制 · 已下载章节会一直保留</string>
+    <string name="settings_download_limit_summary">已用 %1$s / %2$s · 超出后自动清理最旧章节</string>
+    <string name="settings_download_limit_no_limit">已用 %1$s · 已下载章节会一直保留</string>
+    <string name="settings_download_usage_loading">正在计算…</string>
     <string name="settings_download_limit_unlimited">不限制</string>
     <string name="settings_wifi_only_downloads">仅 Wi-Fi 下载</string>
     <string name="settings_wifi_only_downloads_description">移动网络下暂停队列，连接 Wi-Fi 后自动继续</string>
