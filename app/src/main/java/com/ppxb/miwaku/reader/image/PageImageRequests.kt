@@ -6,20 +6,26 @@ import coil.request.ImageRequest
 import coil.size.Dimension
 import coil.size.Size
 import com.ppxb.miwaku.core.data.image.PageImage
-import com.ppxb.miwaku.ui.screen.reader.ScrambleTransformation
+import com.ppxb.miwaku.ui.reader.ScrambleTransformation
 import java.io.File
 
 internal object PageImageRequests {
+    /**
+     * [data] is whatever Coil can fetch: a cached file today, an archive entry once the CBZ fetcher
+     * exists. [cacheKey] must identify that source, because the memory cache is keyed by it and a
+     * rewritten page has to produce a different key.
+     */
     fun build(
         context: Context,
         image: PageImage,
-        file: File,
+        data: Any,
+        cacheKey: String,
         widthPx: Int,
         attempt: Int,
     ): ImageRequest {
         val decodeWidth = if (image.splitCount > 0) 0 else widthPx
         return ImageRequest.Builder(context)
-            .data(file)
+            .data(data)
             .apply {
                 if (image.splitCount > 0) {
                     size(Size.ORIGINAL)
@@ -28,9 +34,17 @@ internal object PageImageRequests {
                     size(Dimension.Pixels(widthPx), Dimension.Undefined)
                 }
             }
-            .memoryCacheKey("${file.absolutePath}:${file.length()}:${image.splitCount}:$decodeWidth:$attempt")
+            .memoryCacheKey("$cacheKey:${image.splitCount}:$decodeWidth:$attempt")
             .diskCachePolicy(CachePolicy.DISABLED)
             .crossfade(false)
             .build()
     }
+
+    fun build(
+        context: Context,
+        image: PageImage,
+        file: File,
+        widthPx: Int,
+        attempt: Int,
+    ): ImageRequest = build(context, image, file, "${file.absolutePath}:${file.length()}", widthPx, attempt)
 }

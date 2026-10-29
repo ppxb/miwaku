@@ -48,6 +48,9 @@ class SettingsStore(context: Context) {
     private val _defaultReadingMode = MutableStateFlow(readReadingMode())
     val defaultReadingMode: StateFlow<ReadingMode> = _defaultReadingMode.asStateFlow()
 
+    private val _pageLayout = MutableStateFlow(readPageLayout())
+    val pageLayout: StateFlow<PageLayoutMode> = _pageLayout.asStateFlow()
+
     private val _downloadPageConcurrency = MutableStateFlow(readDownloadConcurrency())
     val downloadPageConcurrency: StateFlow<Int> = _downloadPageConcurrency.asStateFlow()
 
@@ -114,6 +117,11 @@ class SettingsStore(context: Context) {
         prefs.edit { putString(KEY_READER_DEFAULT_MODE, mode.name) }
     }
 
+    fun setPageLayout(mode: PageLayoutMode) {
+        _pageLayout.value = mode
+        prefs.edit { putString(KEY_PAGE_LAYOUT, mode.name) }
+    }
+
     fun setDownloadPageConcurrency(value: Int) {
         val safe = value.coerceIn(MIN_DOWNLOAD_CONCURRENCY, MAX_DOWNLOAD_CONCURRENCY)
         _downloadPageConcurrency.value = safe
@@ -154,6 +162,11 @@ class SettingsStore(context: Context) {
         return ReadingMode.entries.firstOrNull { it.name == stored } ?: ReadingMode.Webtoon
     }
 
+    private fun readPageLayout(): PageLayoutMode {
+        val stored = prefs.getString(KEY_PAGE_LAYOUT, null) ?: return PageLayoutMode.Automatic
+        return PageLayoutMode.entries.firstOrNull { it.name == stored } ?: PageLayoutMode.Automatic
+    }
+
     private fun readDownloadConcurrency(): Int =
         prefs.getInt(KEY_DOWNLOAD_CONCURRENCY, DEFAULT_DOWNLOAD_CONCURRENCY)
             .coerceIn(MIN_DOWNLOAD_CONCURRENCY, MAX_DOWNLOAD_CONCURRENCY)
@@ -174,6 +187,7 @@ class SettingsStore(context: Context) {
         const val KEY_READER_KEEP_SCREEN_ON = "reader_keep_screen_on"
         const val KEY_READER_SHOW_PAGE_NUMBER = "reader_show_page_number"
         const val KEY_READER_DEFAULT_MODE = "reader_default_mode"
+        const val KEY_PAGE_LAYOUT = "reader_page_layout"
         const val KEY_DOWNLOAD_CONCURRENCY = "download_page_concurrency"
         const val KEY_WIFI_ONLY_DOWNLOADS = "wifi_only_downloads"
         const val KEY_DOWNLOAD_LIMIT_MB = "download_limit_mb"

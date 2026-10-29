@@ -17,3 +17,13 @@ enum class ReadingMode {
     PagedRightToLeft,
     VerticalPager,
 }
+
+/**
+ * How many pages share a screen in the paged modes. [Automatic] follows the orientation, so a phone
+ * in portrait stays single and a tablet or landscape spread shows two.
+ */
+enum class PageLayoutMode {
+    Automatic,
+    Single,
+    Double,
+}

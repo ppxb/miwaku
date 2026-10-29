@@ -2,13 +2,13 @@ package com.ppxb.miwaku.core.data.image
 
 import android.content.Context
 import android.graphics.BitmapFactory
+import com.jakewharton.disklrucache.DiskLruCache
 import com.ppxb.miwaku.core.network.ApiFailure
 import com.ppxb.miwaku.core.network.await
 import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -51,6 +51,11 @@ data class PageSize(
  * On-disk cache for original page bytes. Decoding, unscrambling and downsampling stay in Coil;
  * this store only makes sure a page is downloaded once and gives the reader its true dimensions
  * before the image is composed.
+ *
+ * Storage follows komikku's ChapterCache: a [DiskLruCache] journal owns eviction and size
+ * accounting, and the entry file is addressed by the documented `<key>.0` layout so it can still be
+ * handed to Coil as a plain [File]. Writes go through an editor so a half-written page is never
+ * visible.
  */
 class PageImageStore(
     context: Context,
@@ -60,25 +65,28 @@ class PageImageStore(
     private val localFile: (PageImage) -> File? = { null },
     private val cacheLimitBytes: () -> Long = { DEFAULT_CACHE_LIMIT_BYTES },
 ) {
-    private val cacheRoot = File(context.cacheDir, "$CACHE_DIR/v$CACHE_VERSION")
+    private val cacheRoot =
+        File(context.cacheDir, "$CACHE_DIR/v$CACHE_VERSION").apply { mkdirs() }
+    private val cache: DiskLruCache = openCache()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val downloadSlots = Semaphore(MAX_CONCURRENT_DOWNLOADS)
     private val inFlight = HashMap<String, Flight>()
     private val flightsLock = Any()
-    private val trimming = AtomicBoolean(false)
-    private val downloadsSinceTrim = AtomicInteger(0)
     private val sizeKeys = LinkedHashSet<String>()
     private val sizeLock = Any()
     private val _sizes = MutableStateFlow<Map<String, PageSize>>(emptyMap())
     val sizes: StateFlow<Map<String, PageSize>> = _sizes.asStateFlow()
 
     init {
-        scope.launch { trim() }
+        scope.launch {
+            removeLegacyLayout()
+            removeStaleTemps()
+        }
     }
 
     fun cachedFile(image: PageImage): File? {
         localFile(image)?.takeIf { it.isFile && it.length() > 0 }?.let { return it }
-        return fileFor(image).takeIf { it.isFile && it.length() > 0 }
+        return entryFile(keyFor(image)).takeIf { it.isFile && it.length() > 0 }
     }
 
     fun sizeOf(image: PageImage): PageSize? = _sizes.value[image.cacheKey]
@@ -99,14 +107,17 @@ class PageImageStore(
                 val size = readSize(file)
                 if (size != null) {
                     recordSize(image, size)
-                    file.setLastModified(System.currentTimeMillis())
+                    // Touching the entry keeps the journal's LRU order honest, so the page the
+                    // reader keeps coming back to is not the next eviction candidate.
+                    runCatching { cache.get(keyFor(image))?.close() }
                     if (file.isFile && file.length() > 0) {
                         ReaderPerf.log { "page_cache_hit key=${image.cacheKey}" }
                         return@withContext file
                     }
                 } else if (file.absolutePath.startsWith(cacheRoot.absolutePath)) {
-                    // Never delete a downloaded copy; only the disposable reader cache is repaired here.
-                    file.delete()
+                    // A corrupt cache entry is dropped through the journal; a downloaded copy in
+                    // filesDir is never touched here.
+                    runCatching { cache.remove(keyFor(image)) }
                 }
             }
 
@@ -213,17 +224,14 @@ class PageImageStore(
         ReaderPerf.log { "page_invalidate key=$key" }
         val flight = synchronized(flightsLock) { inFlight.remove(key) }
         flight?.deferred?.cancel()
-        fileFor(image).delete()
+        runCatching { cache.remove(keyFor(image)) }
         synchronized(sizeLock) {
             _sizes.update { it - key }
             sizeKeys.remove(key)
         }
     }
 
-    fun cacheSizeBytes(): Long =
-        runCatching {
-            cacheRoot.walkTopDown().filter { it.isFile }.sumOf { it.length() }
-        }.getOrDefault(0L)
+    fun cacheSizeBytes(): Long = runCatching { cache.size() }.getOrDefault(0L)
 
     fun clearCache() {
         val flights =
@@ -231,8 +239,14 @@ class PageImageStore(
                 inFlight.values.toList().also { inFlight.clear() }
             }
         flights.forEach { it.deferred.cancel() }
+        // Same shape as komikku's ChapterCache.clear(): remove entry by entry so the journal stays
+        // consistent, and never touch the journal files themselves.
         runCatching {
-            cacheRoot.walkTopDown().filter { it.isFile }.forEach { it.delete() }
+            cache.directory.listFiles()?.forEach { file ->
+                val name = file.name
+                if (name == JOURNAL_FILE || name.startsWith("$JOURNAL_FILE.")) return@forEach
+                runCatching { cache.remove(name.substringBeforeLast('.')) }
+            }
         }
         synchronized(sizeLock) {
             _sizes.value = emptyMap()
@@ -243,9 +257,7 @@ class PageImageStore(
 
     private suspend fun download(image: PageImage): File {
         val started = ReaderPerf.mark()
-        val target = fileFor(image)
-        target.parentFile?.mkdirs()
-        val temp = File.createTempFile("${target.name}.", ".tmp", target.parentFile)
+        val temp = File.createTempFile("page.", ".tmp", cacheRoot)
         try {
             try {
                 fetchTo(image.url, temp)
@@ -264,28 +276,33 @@ class PageImageStore(
                 throw IOException("empty image")
             }
             val size = readSize(temp) ?: throw IOException("invalid image")
-            if (!temp.renameTo(target)) {
-                if (target.isFile && readSize(target) != null) {
-                    temp.delete()
-                    recordSize(image, size, refresh = true)
-                    ReaderPerf.log {
-                        "page_downloaded key=${image.cacheKey} ms=${ReaderPerf.mark() - started} bytes=${target.length()}"
-                    }
-                    return target
-                }
-                throw IOException("cannot store image")
-            }
+            val target = commit(image, temp)
             recordSize(image, size, refresh = true)
             ReaderPerf.log {
                 "page_downloaded key=${image.cacheKey} ms=${ReaderPerf.mark() - started} bytes=${target.length()}"
             }
-            maybeTrim()
             return target
         } finally {
             if (temp.exists()) {
                 temp.delete()
             }
         }
+    }
+
+    /** Copies a validated temp file into the journal. The entry only becomes visible on commit. */
+    private fun commit(image: PageImage, temp: File): File {
+        val key = keyFor(image)
+        val editor = cache.edit(key) ?: throw IOException("cache entry is being edited")
+        try {
+            editor.newOutputStream(0).use { output ->
+                temp.inputStream().use { input -> input.copyTo(output) }
+            }
+            editor.commit()
+        } catch (e: IOException) {
+            runCatching { editor.abortUnlessCommitted() }
+            throw e
+        }
+        return entryFile(key)
     }
 
     private suspend fun fetchTo(url: String, temp: File) {
@@ -381,68 +398,43 @@ class PageImageStore(
         }
     }
 
-    private fun maybeTrim() {
-        if (downloadsSinceTrim.incrementAndGet() % TRIM_EVERY_DOWNLOADS != 0) return
-        if (!trimming.compareAndSet(false, true)) return
-        scope.launch {
-            try {
-                trim()
-            } finally {
-                trimming.set(false)
-            }
-        }
-    }
-
+    /** Re-applies the configured limit; [DiskLruCache] trims asynchronously right after. */
     suspend fun trimToLimit() {
-        if (!trimming.compareAndSet(false, true)) return
-        try {
-            withContext(Dispatchers.IO) { trim() }
-        } finally {
-            trimming.set(false)
-        }
+        withContext(Dispatchers.IO) { runCatching { cache.setMaxSize(budgetBytes()) } }
     }
 
-    private fun trim() {
-        val now = System.currentTimeMillis()
-        val allFiles = cacheRoot.walkTopDown().filter { it.isFile }.toList()
-        allFiles
-            .filter { it.name.endsWith(".tmp") && now - it.lastModified() > TEMP_MAX_AGE_MS }
-            .forEach { it.delete() }
-        val files = allFiles.filter { it.isFile && !it.name.endsWith(".tmp") }
-        if (files.isEmpty()) return
+    private fun openCache(): DiskLruCache =
+        DiskLruCache.open(cacheRoot, CACHE_VERSION, VALUE_COUNT, budgetBytes())
+
+    private fun budgetBytes(): Long {
         val configured = cacheLimitBytes().coerceAtLeast(MIN_CACHE_BYTES)
-        val budget =
-            minOf(
-                configured,
-                maxOf(MIN_CACHE_BYTES, cacheRoot.usableSpace / CACHE_FREE_SPACE_DIVISOR),
-            )
-        var total = files.sumOf { it.length() }
-        if (total <= budget) return
-        val target = budget * 9 / 10
-        for (file in files.sortedBy { it.lastModified() }) {
-            if (total <= target) break
-            if (now - file.lastModified() < RECENT_FILE_GRACE_MS) continue
-            val length = file.length()
-            if (file.delete()) {
-                total -= length
-            }
+        return minOf(
+            configured,
+            maxOf(MIN_CACHE_BYTES, cacheRoot.usableSpace / CACHE_FREE_SPACE_DIVISOR),
+        )
+    }
+
+    /** Temp files only survive a process death mid-download; the journal ignores them. */
+    private fun removeStaleTemps() {
+        val now = System.currentTimeMillis()
+        runCatching {
+            cacheRoot.listFiles()
+                ?.filter { it.isFile && it.name.endsWith(".tmp") }
+                ?.filter { now - it.lastModified() > TEMP_MAX_AGE_MS }
+                ?.forEach { it.delete() }
         }
     }
 
-    private fun fileFor(image: PageImage): File {
-        val chapter =
-            image.chapterId
-                .filter { it.isLetterOrDigit() || it == '-' || it == '_' }
-                .ifEmpty { "chapter" }
-        val name = sha1(image.fileName).take(16)
-        val extension =
-            image.fileName
-                .substringAfterLast('.', "")
-                .lowercase()
-                .takeIf { it in IMAGE_EXTENSIONS }
-                ?: "img"
-        return File(File(cacheRoot, chapter), "${image.index.toString().padStart(4, '0')}_$name.$extension")
+    /** The pre-journal layout nested pages in per-chapter directories; [cache] keeps files flat. */
+    private fun removeLegacyLayout() {
+        runCatching {
+            cacheRoot.listFiles()?.filter { it.isDirectory }?.forEach { it.deleteRecursively() }
+        }
     }
+
+    private fun keyFor(image: PageImage): String = sha1(image.cacheKey)
+
+    private fun entryFile(key: String): File = File(cache.directory, "$key.$VALUE_SUFFIX")
 
     private fun readSize(file: File): PageSize? {
         val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -463,16 +455,16 @@ class PageImageStore(
     private companion object {
         const val CACHE_DIR = "reader_pages"
         const val CACHE_VERSION = 1
+        const val VALUE_COUNT = 1
+        const val VALUE_SUFFIX = 0
+        const val JOURNAL_FILE = "journal"
         const val MAX_CONCURRENT_DOWNLOADS = 3
         const val MAX_IMAGE_BYTES = 64L * 1024 * 1024
         const val IMAGE_CALL_TIMEOUT_MS = 60_000L
         const val DEFAULT_CACHE_LIMIT_BYTES = 1024L * 1024 * 1024
         const val MIN_CACHE_BYTES = 256L * 1024 * 1024
         const val CACHE_FREE_SPACE_DIVISOR = 4L
-        const val RECENT_FILE_GRACE_MS = 10 * 60 * 1000L
         const val TEMP_MAX_AGE_MS = 60 * 60 * 1000L
-        const val TRIM_EVERY_DOWNLOADS = 20
         const val MAX_SIZE_ENTRIES = 4096
-        val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp")
     }
 }

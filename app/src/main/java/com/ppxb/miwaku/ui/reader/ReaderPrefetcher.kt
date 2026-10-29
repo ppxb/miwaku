@@ -1,4 +1,4 @@
-package com.ppxb.miwaku.ui.screen.reader
+package com.ppxb.miwaku.ui.reader
 
 import com.ppxb.miwaku.core.data.image.PageImage
 import com.ppxb.miwaku.core.data.image.PageImageStore

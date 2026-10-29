@@ -24,4 +24,5 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     api(libs.kotlinx.coroutines.core)
     implementation(libs.okhttp)
+    implementation(libs.disklrucache)
 }

@@ -1,4 +1,4 @@
-package com.ppxb.miwaku.ui.screen.reader
+package com.ppxb.miwaku.ui.reader
 
 import android.graphics.Bitmap
 import android.graphics.Canvas

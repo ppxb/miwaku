@@ -42,7 +42,7 @@ import com.ppxb.miwaku.ui.screen.downloads.DownloadsScreen
 import com.ppxb.miwaku.ui.screen.explore.ExploreScreen
 import com.ppxb.miwaku.ui.screen.favorites.FavoritesScreen
 import com.ppxb.miwaku.ui.screen.home.HomeScreen
-import com.ppxb.miwaku.ui.screen.reader.ReaderScreen
+import com.ppxb.miwaku.ui.reader.ReaderScreen
 import com.ppxb.miwaku.ui.screen.search.SearchScreen
 import com.ppxb.miwaku.ui.screen.settings.SettingsScreen
 
