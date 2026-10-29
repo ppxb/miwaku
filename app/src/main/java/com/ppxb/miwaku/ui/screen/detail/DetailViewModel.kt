@@ -4,8 +4,10 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ppxb.miwaku.core.data.AppGraph
+import com.ppxb.miwaku.core.data.download.DownloadTask
 import com.ppxb.miwaku.core.data.image.PageImage
 import com.ppxb.miwaku.core.data.image.ReaderPerf
+import com.ppxb.miwaku.model.ChapterSummary
 import com.ppxb.miwaku.model.ComicDetail
 import com.ppxb.miwaku.model.ComicSummary
 import com.ppxb.miwaku.model.ReadingProgress
@@ -17,6 +19,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -41,6 +44,14 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
         AppGraph.progress.entries
             .map { it[id] }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    val downloadTasks: StateFlow<Map<String, DownloadTask>> =
+        combine(AppGraph.downloadManager.tasks, state) { tasks, ui ->
+            val albumId = (ui as? DetailUiState.Content)?.detail?.id ?: id
+            tasks.filter { it.albumId == albumId }.associateBy { it.chapterId }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+
+    val downloadedChapters: StateFlow<Set<String>> = AppGraph.downloadStore.downloaded
 
     private var loadJob: Job? = null
     private var prefetchJob: Job? = null
@@ -103,8 +114,7 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
             }
     }
 
-    private fun show(detail: ComicDetail) {
-        AppGraph.history.record(
+    private fun show(detail: ComicDetail) {        AppGraph.history.record(
             ComicSummary(
                 id = detail.id,
                 title = detail.title,
@@ -113,6 +123,34 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
             ),
         )
         _state.value = DetailUiState.Content(detail)
+    }
+
+    /** Enqueues the chapters covered by [range]; the anchor is the last read chapter, if any. */
+    fun download(range: DownloadRange) {
+        val detail = (state.value as? DetailUiState.Content)?.detail ?: return
+        val anchor = anchorIndex(detail)
+        val selected =
+            when (range) {
+                DownloadRange.All -> detail.chapters
+                DownloadRange.Unread -> detail.chapters.drop(anchor + 1)
+                else -> detail.chapters.drop(anchor + 1).take(range.nextCount ?: 0)
+            }
+        enqueue(detail, selected)
+    }
+
+    fun downloadChapter(chapter: ChapterSummary) {
+        val detail = (state.value as? DetailUiState.Content)?.detail ?: return
+        enqueue(detail, listOf(chapter))
+    }
+
+    private fun anchorIndex(detail: ComicDetail): Int {
+        val progress = AppGraph.progress.entries.value[detail.id] ?: return -1
+        return detail.chapters.indexOfFirst { it.id == progress.chapterId }
+    }
+
+    private fun enqueue(detail: ComicDetail, chapters: List<ChapterSummary>) {
+        if (chapters.isEmpty()) return
+        AppGraph.downloadManager.enqueue(detail.id, detail.title, chapters)
     }
 
     /**

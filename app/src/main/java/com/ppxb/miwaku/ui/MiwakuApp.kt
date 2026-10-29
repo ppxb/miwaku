@@ -23,6 +23,7 @@ import com.ppxb.miwaku.core.data.settings.ThemeMode
 import com.ppxb.miwaku.ui.component.AppBottomBar
 import com.ppxb.miwaku.ui.navigation.CategoryRoute
 import com.ppxb.miwaku.ui.navigation.DetailRoute
+import com.ppxb.miwaku.ui.navigation.DownloadsRoute
 import com.ppxb.miwaku.ui.navigation.ExploreRoute
 import com.ppxb.miwaku.ui.navigation.FavoritesRoute
 import com.ppxb.miwaku.ui.navigation.HomeRoute
@@ -37,6 +38,7 @@ import com.ppxb.miwaku.ui.navigation.navigateToSearch
 import com.ppxb.miwaku.ui.navigation.navigateToTab
 import com.ppxb.miwaku.ui.screen.category.CategoryScreen
 import com.ppxb.miwaku.ui.screen.detail.DetailScreen
+import com.ppxb.miwaku.ui.screen.downloads.DownloadsScreen
 import com.ppxb.miwaku.ui.screen.explore.ExploreScreen
 import com.ppxb.miwaku.ui.screen.favorites.FavoritesScreen
 import com.ppxb.miwaku.ui.screen.home.HomeScreen
@@ -60,6 +62,10 @@ fun MiwakuApp(
     onLowMemoryChange: (Boolean) -> Unit,
     cacheLimitMb: Int,
     onCacheLimitMbChange: (Int) -> Unit,
+    downloadConcurrency: Int,
+    onDownloadConcurrencyChange: (Int) -> Unit,
+    wifiOnlyDownloads: Boolean,
+    onWifiOnlyDownloadsChange: (Boolean) -> Unit,
     keepScreenOn: Boolean,
 ) {
     val navController = rememberNavController()
@@ -76,6 +82,7 @@ fun MiwakuApp(
     // Settings, detail and reader are nested pages with their own back arrow, so the bar steps aside.
     val showBottomBar =
         !destination.isOn(SettingsRoute) &&
+            !destination.isOn(DownloadsRoute) &&
             !destination.isOn(DetailRoute::class) &&
             !destination.isOn(ReaderRoute::class)
 
@@ -156,8 +163,18 @@ fun MiwakuApp(
                     onLowMemoryChange = onLowMemoryChange,
                     cacheLimitMb = cacheLimitMb,
                     onCacheLimitMbChange = onCacheLimitMbChange,
+                    downloadConcurrency = downloadConcurrency,
+                    onDownloadConcurrencyChange = onDownloadConcurrencyChange,
+                    wifiOnlyDownloads = wifiOnlyDownloads,
+                    onWifiOnlyDownloadsChange = onWifiOnlyDownloadsChange,
+                    onOpenDownloads = {
+                        navController.navigate(DownloadsRoute) { launchSingleTop = true }
+                    },
                     onBack = { navController.popBackStack() },
                 )
+            }
+            composable<DownloadsRoute> {
+                DownloadsScreen(onBack = { navController.popBackStack() })
             }
         }
         AnimatedVisibility(

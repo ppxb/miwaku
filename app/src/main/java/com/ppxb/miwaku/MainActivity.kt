@@ -26,6 +26,8 @@ class MainActivity : ComponentActivity() {
             val wifiOnlyPrefetch by settings.wifiOnlyPrefetch.collectAsState()
             val lowMemory by settings.lowMemory.collectAsState()
             val cacheLimitMb by settings.readerCacheLimitMb.collectAsState()
+            val downloadConcurrency by settings.downloadPageConcurrency.collectAsState()
+            val wifiOnlyDownloads by settings.wifiOnlyDownloads.collectAsState()
             val keepScreenOn by settings.keepScreenOn.collectAsState()
             val darkTheme =
                 when (themeMode) {
@@ -50,6 +52,10 @@ class MainActivity : ComponentActivity() {
                     onLowMemoryChange = settings::setLowMemory,
                     cacheLimitMb = cacheLimitMb,
                     onCacheLimitMbChange = settings::setReaderCacheLimitMb,
+                    downloadConcurrency = downloadConcurrency,
+                    onDownloadConcurrencyChange = settings::setDownloadPageConcurrency,
+                    wifiOnlyDownloads = wifiOnlyDownloads,
+                    onWifiOnlyDownloadsChange = settings::setWifiOnlyDownloads,
                     keepScreenOn = keepScreenOn,
                 )
             }

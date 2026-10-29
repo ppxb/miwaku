@@ -3,10 +3,13 @@ package com.ppxb.miwaku.core.data
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import com.ppxb.miwaku.core.data.download.DownloadManager
+import com.ppxb.miwaku.core.data.download.DownloadStore
 import com.ppxb.miwaku.core.data.image.ChapterManifestCache
 import com.ppxb.miwaku.core.data.image.PageImageStore
 import com.ppxb.miwaku.core.data.settings.SettingsStore
 import com.ppxb.miwaku.core.network.ApiClient
+import com.ppxb.miwaku.core.network.NetworkMetrics
 import com.ppxb.miwaku.core.network.NetworkMetricsInterceptor
 import com.ppxb.miwaku.core.network.PersistentCookieJar
 import com.ppxb.miwaku.core.network.RateLimitInterceptor
@@ -15,6 +18,15 @@ import com.ppxb.miwaku.core.network.SharedSettingSnapshotStore
 import java.util.concurrent.TimeUnit
 import kotlin.time.Duration.Companion.seconds
 import okhttp3.OkHttpClient
+
+data class NetworkStats(
+    val requests: Long,
+    val failures: Long,
+    val retries: Long,
+    val failovers: Long,
+    val throttled: Long,
+    val averageMs: Long,
+)
 
 object AppGraph {
     private lateinit var appContext: Context
@@ -62,16 +74,34 @@ object AppGraph {
     private val apiClient by lazy { ApiClient(apiHttpClient, settingStore) }
     private val manifests by lazy { ChapterManifestCache(appContext) }
     private val detailStore by lazy { ComicDetailCache(appContext) }
+    val downloadStore by lazy { DownloadStore(appContext) }
     val pageStore by lazy {
         PageImageStore(
             context = appContext,
             userAgent = apiClient.userAgent(),
             httpClient = imageHttpClient,
             alternateImageHost = { apiClient.refreshImageHost() },
+            localFile = { image ->
+                downloadStore
+                    .pageFile(image.chapterId, image.index, image.fileName)
+                    .takeIf { it.isFile && it.length() > 0 }
+            },
             cacheLimitBytes = { effectiveCacheLimitBytes() },
         )
     }
-    val comics: ComicRepository by lazy { ComicRepository(apiClient, manifests, detailStore) }
+    val comics: ComicRepository by lazy {
+        ComicRepository(apiClient, manifests, detailStore, downloadStore)
+    }
+    val downloadManager by lazy {
+        DownloadManager(
+            httpClient = imageHttpClient,
+            api = apiClient,
+            comics = comics,
+            store = downloadStore,
+            settings = settings,
+            networkAllowed = { !settings.wifiOnlyDownloads.value || isUnmetered() },
+        )
+    }
     val history: HistoryStore by lazy { HistoryStore(appContext) }
     val progress: ProgressStore by lazy { ProgressStore(appContext) }
     val readerModes: ReaderModeStore by lazy { ReaderModeStore(appContext) }
@@ -92,6 +122,18 @@ object AppGraph {
 
     fun readerCacheSizeBytes(): Long =
         pageStore.cacheSizeBytes() + manifests.sizeBytes() + detailStore.sizeBytes()
+
+    fun networkMetrics(): NetworkStats {
+        val snapshot = NetworkMetrics.snapshot()
+        return NetworkStats(
+            requests = snapshot.requests,
+            failures = snapshot.failures,
+            retries = snapshot.retries,
+            failovers = snapshot.failovers,
+            throttled = snapshot.throttled,
+            averageMs = snapshot.averageMs,
+        )
+    }
 
     fun clearReaderCache() {
         pageStore.clearCache()

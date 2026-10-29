@@ -11,6 +11,7 @@
     <string name="action_settings">设置</string>
     <string name="action_back">返回</string>
     <string name="action_cancel">取消</string>
+    <string name="action_close">关闭</string>
     <string name="action_retry">重试</string>
     <string name="error_load_failed">加载失败</string>
 
@@ -51,11 +52,17 @@
     <string name="detail_play">开始阅读</string>
     <string name="detail_continue">继续阅读</string>
     <string name="detail_download">下载</string>
+    <string name="detail_download_all">全本下载</string>
+    <string name="detail_download_next_1">后续 1 章</string>
+    <string name="detail_download_next_5">后续 5 章</string>
+    <string name="detail_download_next_10">后续 10 章</string>
+    <string name="detail_download_next_25">后续 25 章</string>
+    <string name="detail_download_unread">未读</string>
+    <string name="detail_downloaded">已下载</string>
     <string name="detail_chapter_count">%1$d 话</string>
     <string name="detail_no_chapters">暂无章节</string>
     <string name="detail_description_more">展开</string>
     <string name="detail_description_less">收起</string>
-    <string name="detail_back_to_top">回到顶部</string>
 
     <!-- Reader -->
     <string name="reader_title">阅读</string>
@@ -83,6 +90,23 @@
 
     <!-- Settings -->
     <string name="settings_title">设置</string>
+    <string name="settings_section_downloads">下载</string>
+    <string name="settings_download_queue">下载队列</string>
+    <string name="settings_download_queue_summary">查看进度、暂停或继续</string>
+    <string name="settings_download_concurrency">同时下载图片数</string>
+    <string name="settings_download_concurrency_summary">每章 %1$d 张并发</string>
+    <string name="settings_download_concurrency_option">%1$d 张</string>
+    <string name="settings_wifi_only_downloads">仅 Wi-Fi 下载</string>
+    <string name="settings_wifi_only_downloads_description">移动网络下暂停队列，连接 Wi-Fi 后手动继续</string>
+    <string name="settings_network_stats">网络请求统计</string>
+    <string name="settings_network_stats_summary">请求 %1$d · 失败 %2$d · 重试 %3$d</string>
+    <string name="settings_network_stats_description">自本次启动以来的累计值，不含缓存命中</string>
+    <string name="settings_network_requests">请求</string>
+    <string name="settings_network_failures">失败</string>
+    <string name="settings_network_retries">重试</string>
+    <string name="settings_network_failovers">换源</string>
+    <string name="settings_network_throttled">429</string>
+    <string name="settings_network_average">平均耗时</string>
     <string name="settings_section_reader_loading">阅读加载</string>
     <string name="settings_reader_background">阅读背景</string>
     <string name="settings_reader_background_match_theme">跟随主题</string>
@@ -119,4 +143,17 @@
     <string name="settings_clear_cache_message">将删除已缓存的页面和章节索引，之后需要重新加载。</string>
     <string name="settings_placeholder_covers">封面占位图</string>
     <string name="settings_placeholder_covers_description">用灰色图块替换封面和预览图，阅读器不受影响</string>
+
+    <!-- Downloads -->
+    <string name="downloads_title">下载队列</string>
+    <string name="downloads_empty_title">还没有下载任务</string>
+    <string name="downloads_empty_description">在作品详情页点击下载按钮开始</string>
+    <string name="downloads_pause_all">全部暂停</string>
+    <string name="downloads_resume_all">全部继续</string>
+    <string name="downloads_waiting_wifi">等待 Wi-Fi：队列已暂停，连接 Wi-Fi 后点“全部继续”</string>
+    <string name="downloads_state_queued">排队中</string>
+    <string name="downloads_state_running">下载中 %1$d / %2$d</string>
+    <string name="downloads_state_completed">已完成</string>
+    <string name="downloads_state_failed">失败：%1$s</string>
+    <string name="downloads_retry">重试</string>
 </resources>

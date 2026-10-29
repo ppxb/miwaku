@@ -1,5 +1,6 @@
 package com.ppxb.miwaku.core.data
 
+import com.ppxb.miwaku.core.data.download.DownloadStore
 import com.ppxb.miwaku.core.data.image.ChapterManifestCache
 import com.ppxb.miwaku.core.data.image.ReaderPerf
 import com.ppxb.miwaku.core.network.ApiClient
@@ -20,6 +21,7 @@ class ComicRepository internal constructor(
     private val api: ApiClient,
     private val manifests: ChapterManifestCache,
     private val detailStore: ComicDetailCache,
+    private val downloads: DownloadStore? = null,
 ) {
     private val detailCache = ConcurrentHashMap<String, CachedDetail>()
     suspend fun latest(page: Int = 0): List<ComicSummary> =
@@ -142,6 +144,14 @@ class ComicRepository internal constructor(
 
     suspend fun chapter(albumId: String, chapterId: String): ChapterContent {
         val started = ReaderPerf.mark()
+        downloads?.manifest(chapterId)?.let { downloaded ->
+            val host = api.imageHost()?.takeIf { it.isNotBlank() } ?: downloaded.imageHost
+            val content = downloaded.toContent(host)
+            ReaderPerf.log {
+                "chapter_download_hit chapter=$chapterId pages=${content.pages.size} ms=${ReaderPerf.mark() - started}"
+            }
+            return content
+        }
         manifests.get(chapterId)?.let { cached ->
             val host = api.imageHost() ?: cached.imageHost
             if (host.isNotBlank()) {

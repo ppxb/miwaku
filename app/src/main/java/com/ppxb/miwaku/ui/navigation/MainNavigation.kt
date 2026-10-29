@@ -35,6 +35,9 @@ data object SearchRoute
 data object SettingsRoute
 
 @Serializable
+data object DownloadsRoute
+
+@Serializable
 data class DetailRoute(val id: String)
 
 @Serializable

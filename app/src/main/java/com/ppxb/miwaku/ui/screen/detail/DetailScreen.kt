@@ -1,5 +1,6 @@
 package com.ppxb.miwaku.ui.screen.detail
 
+import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.fadeIn
@@ -33,12 +34,15 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
-import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -51,7 +55,6 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -69,6 +72,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.ppxb.miwaku.R
+import com.ppxb.miwaku.core.data.download.DownloadState
+import com.ppxb.miwaku.core.data.download.DownloadTask
 import com.ppxb.miwaku.model.ChapterSummary
 import com.ppxb.miwaku.model.ComicDetail
 import com.ppxb.miwaku.model.ReadingProgress
@@ -79,7 +84,6 @@ import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.blur.hazeBlur
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
-import kotlinx.coroutines.launch
 
 @Composable
 internal fun DetailScreen(
@@ -91,9 +95,10 @@ internal fun DetailScreen(
 ) {
     val state by viewModel.state.collectAsState()
     val resume by viewModel.resume.collectAsState()
+    val tasks by viewModel.downloadTasks.collectAsState()
+    val downloaded by viewModel.downloadedChapters.collectAsState()
     val listState = rememberLazyListState()
     val hazeState = rememberHazeState()
-    val scope = rememberCoroutineScope()
     val density = LocalDensity.current
     val barThreshold = with(density) { 80.dp.toPx() }
     val showBar by remember {
@@ -101,10 +106,14 @@ internal fun DetailScreen(
             listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > barThreshold
         }
     }
-    val showBackToTop by remember {
-        derivedStateOf { listState.firstVisibleItemIndex > 0 }
-    }
-    val title = (state as? DetailUiState.Content)?.detail?.title.orEmpty()
+    val detail = (state as? DetailUiState.Content)?.detail
+    val title = detail?.title.orEmpty()
+    val resumeChapter =
+        detail?.let { current ->
+            resume?.let { progress -> current.chapters.firstOrNull { it.id == progress.chapterId } }
+        }
+    val resumeTarget = resumeChapter ?: detail?.chapters?.firstOrNull()
+    val resumePage = if (resumeChapter != null) resume?.page ?: 0 else 0
 
     Box(modifier.fillMaxSize()) {
         when (val current = state) {
@@ -127,10 +136,14 @@ internal fun DetailScreen(
                 DetailContent(
                     detail = current.detail,
                     resume = resume,
+                    tasks = tasks,
+                    downloaded = downloaded,
                     onOpenChapter = onOpenChapter,
                     onBack = onBack,
                     placeholderCovers = placeholderCovers,
                     listState = listState,
+                    onDownloadRange = viewModel::download,
+                    onDownloadChapter = viewModel::downloadChapter,
                     modifier = Modifier.fillMaxSize().hazeSource(hazeState),
                 )
         }
@@ -147,23 +160,35 @@ internal fun DetailScreen(
             )
         }
         AnimatedVisibility(
-            visible = showBackToTop,
+            visible = showBar && resumeTarget != null,
             modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp).navigationBarsPadding(),
             enter = fadeIn() + scaleIn(),
             exit = fadeOut() + scaleOut(),
         ) {
-            FloatingActionButton(
-                onClick = { scope.launch { listState.animateScrollToItem(0) } },
-                shape = CircleShape,
-                containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                contentColor = MaterialTheme.colorScheme.onSurface,
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.KeyboardArrowUp,
-                    contentDescription = stringResource(R.string.detail_back_to_top),
-                    modifier = Modifier.size(24.dp),
-                )
-            }
+            ExtendedFloatingActionButton(
+                onClick = {
+                    val current = detail
+                    val target = resumeTarget
+                    if (current != null && target != null) {
+                        onOpenChapter(current.id, target.id, resumePage)
+                    }
+                },
+                icon = {
+                    Icon(
+                        imageVector = Icons.Rounded.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                    )
+                },
+                text = {
+                    Text(
+                        text =
+                            stringResource(
+                                if (resumeChapter != null) R.string.detail_continue else R.string.detail_play,
+                            ),
+                    )
+                },
+            )
         }
     }
 }
@@ -237,10 +262,14 @@ private fun PinnedDetailTopBar(
 private fun DetailContent(
     detail: ComicDetail,
     resume: ReadingProgress?,
+    tasks: Map<String, DownloadTask>,
+    downloaded: Set<String>,
     onOpenChapter: (albumId: String, chapterId: String, page: Int) -> Unit,
     onBack: () -> Unit,
     placeholderCovers: Boolean,
     listState: LazyListState,
+    onDownloadRange: (DownloadRange) -> Unit,
+    onDownloadChapter: (ChapterSummary) -> Unit,
     modifier: Modifier,
 ) {
     LazyColumn(state = listState, modifier = modifier.fillMaxWidth()) {
@@ -251,6 +280,7 @@ private fun DetailContent(
                 onBack = onBack,
                 placeholderCovers = placeholderCovers,
                 onOpenChapter = onOpenChapter,
+                onDownloadRange = onDownloadRange,
             )
         }
         if (detail.description.isNotBlank()) {
@@ -274,7 +304,10 @@ private fun DetailContent(
             items(detail.chapters, key = { it.id }) { chapter ->
                 ChapterTrack(
                     chapter = chapter,
+                    task = tasks[chapter.id],
+                    downloaded = downloaded.contains(chapter.id),
                     onClick = { onOpenChapter(detail.id, chapter.id, 0) },
+                    onDownload = { onDownloadChapter(chapter) },
                 )
             }
         }
@@ -288,6 +321,7 @@ private fun PlaylistHeader(
     onBack: () -> Unit,
     placeholderCovers: Boolean,
     onOpenChapter: (albumId: String, chapterId: String, page: Int) -> Unit,
+    onDownloadRange: (DownloadRange) -> Unit,
 ) {
     val windowInfo = LocalWindowInfo.current
     val density = LocalDensity.current
@@ -392,7 +426,10 @@ private fun PlaylistHeader(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 PlayButton(detail = detail, resume = resume, onOpenChapter = onOpenChapter)
-                DownloadButton()
+                DownloadButton(
+                    enabled = detail.chapters.isNotEmpty(),
+                    onSelect = onDownloadRange,
+                )
             }
         }
     }
@@ -435,23 +472,52 @@ private fun PlayButton(
 }
 
 @Composable
-private fun DownloadButton() {
-    Surface(
-        onClick = {},
-        shape = CircleShape,
-        color = Color.White.copy(alpha = 0.16f),
-        contentColor = Color.White,
-        modifier = Modifier.size(40.dp),
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Icon(
-                imageVector = Icons.Rounded.Download,
-                contentDescription = stringResource(R.string.detail_download),
-                modifier = Modifier.size(20.dp),
-            )
+private fun DownloadButton(
+    enabled: Boolean,
+    onSelect: (DownloadRange) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        Surface(
+            onClick = { expanded = true },
+            enabled = enabled,
+            shape = CircleShape,
+            color = Color.White.copy(alpha = 0.16f),
+            contentColor = Color.White,
+            modifier = Modifier.size(40.dp),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = Icons.Rounded.Download,
+                    contentDescription = stringResource(R.string.detail_download),
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DownloadRange.entries.forEach { range ->
+                DropdownMenuItem(
+                    text = { Text(stringResource(range.labelRes())) },
+                    onClick = {
+                        expanded = false
+                        onSelect(range)
+                    },
+                )
+            }
         }
     }
 }
+
+@StringRes
+private fun DownloadRange.labelRes(): Int =
+    when (this) {
+        DownloadRange.All -> R.string.detail_download_all
+        DownloadRange.Next1 -> R.string.detail_download_next_1
+        DownloadRange.Next5 -> R.string.detail_download_next_5
+        DownloadRange.Next10 -> R.string.detail_download_next_10
+        DownloadRange.Next25 -> R.string.detail_download_next_25
+        DownloadRange.Unread -> R.string.detail_download_unread
+    }
 
 @Composable
 private fun DescriptionBlock(description: String) {
@@ -547,28 +613,87 @@ private fun ChapterHeader(count: Int) {
 @Composable
 private fun ChapterTrack(
     chapter: ChapterSummary,
+    task: DownloadTask?,
+    downloaded: Boolean,
     onClick: () -> Unit,
+    onDownload: () -> Unit,
 ) {
     Row(
         modifier =
             Modifier
                 .fillMaxWidth()
                 .clickable(onClick = onClick)
-                .padding(horizontal = 20.dp, vertical = 12.dp),
+                .padding(start = 20.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = chapter.name,
-            style = MaterialTheme.typography.bodyLarge,
+            style = MaterialTheme.typography.bodyMedium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-        Icon(
-            imageVector = Icons.Rounded.PlayArrow,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(20.dp),
+        Spacer(Modifier.width(8.dp))
+        ChapterDownloadControl(
+            task = task,
+            downloaded = downloaded,
+            onDownload = onDownload,
         )
+    }
+}
+
+/**
+ * Komikku-style 32dp state layer: a filled check when downloaded, a ring while downloading, an
+ * error glyph when failed, otherwise the download arrow. Keeping it compact is what keeps the
+ * chapter rows dense.
+ */
+@Composable
+private fun ChapterDownloadControl(
+    task: DownloadTask?,
+    downloaded: Boolean,
+    onDownload: () -> Unit,
+) {
+    val slot = Modifier.size(32.dp)
+    when {
+        downloaded || task?.state == DownloadState.Completed ->
+            Box(slot, contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = Icons.Filled.CheckCircle,
+                    contentDescription = stringResource(R.string.detail_downloaded),
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+        task?.state == DownloadState.Running || task?.state == DownloadState.Queued ->
+            Box(slot, contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                )
+            }
+        task?.state == DownloadState.Failed ->
+            Box(
+                modifier = slot.clip(CircleShape).clickable(onClick = onDownload),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.ErrorOutline,
+                    contentDescription = stringResource(R.string.action_retry),
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+        else ->
+            Box(
+                modifier = slot.clip(CircleShape).clickable(onClick = onDownload),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Download,
+                    contentDescription = stringResource(R.string.detail_download),
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
     }
 }

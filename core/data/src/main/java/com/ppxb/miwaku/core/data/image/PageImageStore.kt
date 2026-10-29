@@ -57,6 +57,7 @@ class PageImageStore(
     private val userAgent: String,
     private val httpClient: OkHttpClient,
     private val alternateImageHost: suspend () -> String? = { null },
+    private val localFile: (PageImage) -> File? = { null },
     private val cacheLimitBytes: () -> Long = { DEFAULT_CACHE_LIMIT_BYTES },
 ) {
     private val cacheRoot = File(context.cacheDir, "$CACHE_DIR/v$CACHE_VERSION")
@@ -75,12 +76,25 @@ class PageImageStore(
         scope.launch { trim() }
     }
 
-    fun cachedFile(image: PageImage): File? = fileFor(image).takeIf { it.isFile && it.length() > 0 }
+    fun cachedFile(image: PageImage): File? {
+        localFile(image)?.takeIf { it.isFile && it.length() > 0 }?.let { return it }
+        return fileFor(image).takeIf { it.isFile && it.length() > 0 }
+    }
 
     fun sizeOf(image: PageImage): PageSize? = _sizes.value[image.cacheKey]
 
     suspend fun prepare(image: PageImage): File =
         withContext(Dispatchers.IO) {
+            localFile(image)?.let { file ->
+                if (file.isFile && file.length() > 0) {
+                    readSize(file)?.let { size ->
+                        recordSize(image, size)
+                        ReaderPerf.log { "page_download_hit key=${image.cacheKey}" }
+                        return@withContext file
+                    }
+                }
+            }
+
             cachedFile(image)?.let { file ->
                 val size = readSize(file)
                 if (size != null) {
@@ -90,7 +104,8 @@ class PageImageStore(
                         ReaderPerf.log { "page_cache_hit key=${image.cacheKey}" }
                         return@withContext file
                     }
-                } else {
+                } else if (file.absolutePath.startsWith(cacheRoot.absolutePath)) {
+                    // Never delete a downloaded copy; only the disposable reader cache is repaired here.
                     file.delete()
                 }
             }

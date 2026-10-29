@@ -6,8 +6,13 @@ import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import com.ppxb.miwaku.core.data.AppGraph
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 class MiwakuApplication : Application(), ImageLoaderFactory {
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val imageLoader: ImageLoader by lazy {
         val memoryCacheBytes =
             minOf((Runtime.getRuntime().maxMemory() * MEMORY_CACHE_PERCENT).toLong(), MAX_MEMORY_CACHE_BYTES)
@@ -32,6 +37,8 @@ class MiwakuApplication : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         AppGraph.init(this)
+        // Restore queued chapters off the main thread; the manager reads its task list from disk.
+        appScope.launch { AppGraph.downloadManager }
     }
 
     override fun newImageLoader(): ImageLoader = imageLoader

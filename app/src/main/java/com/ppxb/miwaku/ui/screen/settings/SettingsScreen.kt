@@ -7,6 +7,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -59,6 +60,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.ppxb.miwaku.R
 import com.ppxb.miwaku.core.data.AppGraph
+import com.ppxb.miwaku.core.data.NetworkStats
 import com.ppxb.miwaku.core.data.settings.ThemeMode
 import com.ppxb.miwaku.ui.component.AmbientGlow
 import com.ppxb.miwaku.ui.component.SettingGroup
@@ -89,6 +91,11 @@ fun SettingsScreen(
     onLowMemoryChange: (Boolean) -> Unit,
     cacheLimitMb: Int,
     onCacheLimitMbChange: (Int) -> Unit,
+    downloadConcurrency: Int,
+    onDownloadConcurrencyChange: (Int) -> Unit,
+    wifiOnlyDownloads: Boolean,
+    onWifiOnlyDownloadsChange: (Boolean) -> Unit,
+    onOpenDownloads: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -96,6 +103,9 @@ fun SettingsScreen(
     var showPrefetchDialog by rememberSaveable { mutableStateOf(false) }
     var showCacheLimitDialog by rememberSaveable { mutableStateOf(false) }
     var showClearCacheDialog by rememberSaveable { mutableStateOf(false) }
+    var showDownloadConcurrencyDialog by rememberSaveable { mutableStateOf(false) }
+    var showNetworkStatsDialog by rememberSaveable { mutableStateOf(false) }
+    var networkStats by remember { mutableStateOf<NetworkStats?>(null) }
     var cacheSize by remember { mutableStateOf<Long?>(null) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -212,6 +222,31 @@ fun SettingsScreen(
                 }
                 item {
                     Box(Modifier.padding(horizontal = 16.dp)) {
+                        SettingGroup(title = stringResource(R.string.settings_section_downloads)) {
+                            SettingItem(
+                                title = stringResource(R.string.settings_download_queue),
+                                subtitle = stringResource(R.string.settings_download_queue_summary),
+                                onClick = onOpenDownloads,
+                            )
+                            SettingItem(
+                                title = stringResource(R.string.settings_download_concurrency),
+                                subtitle =
+                                    stringResource(
+                                        R.string.settings_download_concurrency_summary,
+                                        downloadConcurrency,
+                                    ),
+                                onClick = { showDownloadConcurrencyDialog = true },
+                            )
+                            SettingItem(
+                                title = stringResource(R.string.settings_wifi_only_downloads),
+                                subtitle = stringResource(R.string.settings_wifi_only_downloads_description),
+                                switch = wifiOnlyDownloads to onWifiOnlyDownloadsChange,
+                            )
+                        }
+                    }
+                }
+                item {
+                    Box(Modifier.padding(horizontal = 16.dp)) {
                         SettingGroup(title = stringResource(R.string.settings_section_storage)) {
                             val cacheLabel =
                                 cacheSize?.let { Formatter.formatShortFileSize(context, it) }
@@ -243,6 +278,21 @@ fun SettingsScreen(
                                 title = stringResource(R.string.settings_placeholder_covers),
                                 subtitle = stringResource(R.string.settings_placeholder_covers_description),
                                 switch = placeholderCovers to onPlaceholderCoversChange,
+                            )
+                            val metrics = AppGraph.networkMetrics()
+                            SettingItem(
+                                title = stringResource(R.string.settings_network_stats),
+                                subtitle =
+                                    stringResource(
+                                        R.string.settings_network_stats_summary,
+                                        metrics.requests,
+                                        metrics.failures,
+                                        metrics.retries,
+                                    ),
+                                onClick = {
+                                    networkStats = metrics
+                                    showNetworkStatsDialog = true
+                                },
                             )
                         }
                     }
@@ -346,6 +396,22 @@ fun SettingsScreen(
             },
         )
     }
+    if (showDownloadConcurrencyDialog) {
+        DownloadConcurrencyDialog(
+            current = downloadConcurrency,
+            onSelect = {
+                onDownloadConcurrencyChange(it)
+                showDownloadConcurrencyDialog = false
+            },
+            onDismiss = { showDownloadConcurrencyDialog = false },
+        )
+    }
+    if (showNetworkStatsDialog) {
+        NetworkStatsDialog(
+            stats = networkStats ?: AppGraph.networkMetrics(),
+            onDismiss = { showNetworkStatsDialog = false },
+        )
+    }
 }
 
 @StringRes
@@ -358,6 +424,7 @@ private fun ThemeMode.labelRes(): Int =
 
 private val PrefetchOptions = listOf(3, 6, 10)
 private val CacheLimitOptions = listOf(512, 1024, 2048)
+private val DownloadConcurrencyOptions = listOf(1, 2, 3, 5)
 private const val LOW_MEMORY_CACHE_LIMIT_MB = 256
 
 private fun cacheLimitLabel(mb: Int): String =
@@ -447,6 +514,100 @@ private fun CacheLimitDialog(
             }
         },
     )
+}
+
+@Composable
+private fun DownloadConcurrencyDialog(
+    current: Int,
+    onSelect: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.settings_download_concurrency)) },
+        text = {
+            Column {
+                DownloadConcurrencyOptions.forEach { value ->
+                    Row(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .selectable(
+                                    selected = value == current,
+                                    role = Role.RadioButton,
+                                    onClick = { onSelect(value) },
+                                ).padding(horizontal = 8.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = value == current, onClick = null)
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            text = stringResource(R.string.settings_download_concurrency_option, value),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        },
+    )
+}
+
+@Composable
+private fun NetworkStatsDialog(
+    stats: NetworkStats,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.settings_network_stats)) },
+        text = {
+            Column {
+                Text(
+                    text = stringResource(R.string.settings_network_stats_description),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                StatRow(stringResource(R.string.settings_network_requests), stats.requests.toString())
+                StatRow(stringResource(R.string.settings_network_failures), stats.failures.toString())
+                StatRow(stringResource(R.string.settings_network_retries), stats.retries.toString())
+                StatRow(stringResource(R.string.settings_network_failovers), stats.failovers.toString())
+                StatRow(stringResource(R.string.settings_network_throttled), stats.throttled.toString())
+                StatRow(stringResource(R.string.settings_network_average), "${stats.averageMs} ms")
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.action_close))
+            }
+        },
+    )
+}
+
+@Composable
+private fun StatRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
 }
 
 @Composable
