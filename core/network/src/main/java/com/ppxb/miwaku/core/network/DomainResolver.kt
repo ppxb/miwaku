@@ -188,8 +188,8 @@ internal class DomainResolver(
                     ?: return CandidateProbe(base, null, latency, "missing data field")
                 val decoded = Codec.decodeJson(data, ts)
                     ?: return CandidateProbe(base, null, latency, "decrypt failed")
-                val version = VERSION_REGEX.find(decoded)?.groupValues?.get(1).orEmpty()
-                val imageHost = IMG_HOST_REGEX.find(decoded)?.groupValues?.get(1).orEmpty().trimEnd('/')
+                val version = VERSION_REGEX.find(decoded)?.groupValues?.get(1).orEmpty().trim()
+                val imageHost = IMG_HOST_REGEX.find(decoded)?.groupValues?.get(1).orEmpty().replace("\\/", "/").trimEnd('/')
                 if (version.isEmpty() || imageHost.isEmpty()) {
                     return CandidateProbe(base, null, latency, "missing jm3_version/img_host")
                 }
