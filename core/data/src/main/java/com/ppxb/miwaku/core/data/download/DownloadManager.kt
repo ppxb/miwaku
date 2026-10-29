@@ -46,6 +46,7 @@ class DownloadManager(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val runMutex = Mutex()
+    private val trimMutex = Mutex()
     private val persistLock = Any()
     private val persistRequests = Channel<Unit>(Channel.CONFLATED)
 
@@ -81,7 +82,10 @@ class DownloadManager(
                 store.saveTasks(_tasks.value)
             }
         }
-        scope.launch { store.refreshDownloaded() }
+        scope.launch {
+            store.refreshDownloaded()
+            trimToStorageLimit()
+        }
         persist(force = true)
         if (!paused && _tasks.value.any { it.state == DownloadState.Queued }) start()
     }
@@ -160,7 +164,6 @@ class DownloadManager(
         persist(force = true)
         scope.launch {
             store.deleteChapter(chapterId)
-            store.refreshDownloaded()
         }
     }
 
@@ -172,7 +175,41 @@ class DownloadManager(
         persist(force = true)
         scope.launch {
             completed.forEach { store.deleteChapter(it) }
-            store.refreshDownloaded()
+        }
+    }
+
+    /**
+     * Best-effort cap for downloaded chapters: delete the oldest finished chapters until the
+     * directory fits. Queued/running chapters are never removed.
+     */
+    fun trimToStorageLimit() {
+        val limitMb = settings.downloadLimitMb.value
+        if (limitMb <= 0) return
+        scope.launch {
+            trimMutex.withLock {
+                val limitBytes = limitMb.toLong() * 1024L * 1024L
+                var total = store.downloadSizeBytes()
+                if (total <= limitBytes) return@withLock
+                val candidates =
+                    _tasks.value
+                        .filter {
+                            it.state == DownloadState.Completed || it.state == DownloadState.Failed
+                        }.sortedBy { it.updatedAt }
+                for (task in candidates) {
+                    if (total <= limitBytes) break
+                    val current = _tasks.value.firstOrNull { it.chapterId == task.chapterId }
+                    if (current?.state != DownloadState.Completed &&
+                        current?.state != DownloadState.Failed
+                    ) {
+                        continue
+                    }
+                    val size = store.chapterSizeBytes(task.chapterId)
+                    _tasks.update { list -> list.filterNot { it.chapterId == task.chapterId } }
+                    store.deleteChapter(task.chapterId)
+                    total -= size
+                    persist(force = true)
+                }
+            }
         }
     }
 
@@ -272,6 +309,7 @@ class DownloadManager(
                 )
             }
             persist(force = true)
+            trimToStorageLimit()
             return true
         } catch (e: WifiRequired) {
             update(task.chapterId) { it.copy(state = DownloadState.Queued, message = null) }

@@ -66,6 +66,8 @@ fun MiwakuApp(
     onDownloadConcurrencyChange: (Int) -> Unit,
     wifiOnlyDownloads: Boolean,
     onWifiOnlyDownloadsChange: (Boolean) -> Unit,
+    downloadLimitMb: Int,
+    onDownloadLimitChange: (Int) -> Unit,
     keepScreenOn: Boolean,
 ) {
     val navController = rememberNavController()
@@ -172,6 +174,8 @@ fun MiwakuApp(
                     onDownloadConcurrencyChange = onDownloadConcurrencyChange,
                     wifiOnlyDownloads = wifiOnlyDownloads,
                     onWifiOnlyDownloadsChange = onWifiOnlyDownloadsChange,
+                    downloadLimitMb = downloadLimitMb,
+                    onDownloadLimitChange = onDownloadLimitChange,
                     onOpenDownloads = {
                         navController.navigate(DownloadsRoute) { launchSingleTop = true }
                     },

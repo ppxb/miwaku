@@ -95,6 +95,8 @@ fun SettingsScreen(
     onDownloadConcurrencyChange: (Int) -> Unit,
     wifiOnlyDownloads: Boolean,
     onWifiOnlyDownloadsChange: (Boolean) -> Unit,
+    downloadLimitMb: Int,
+    onDownloadLimitChange: (Int) -> Unit,
     onOpenDownloads: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
@@ -104,6 +106,7 @@ fun SettingsScreen(
     var showCacheLimitDialog by rememberSaveable { mutableStateOf(false) }
     var showClearCacheDialog by rememberSaveable { mutableStateOf(false) }
     var showDownloadConcurrencyDialog by rememberSaveable { mutableStateOf(false) }
+    var showDownloadLimitDialog by rememberSaveable { mutableStateOf(false) }
     var showNetworkStatsDialog by rememberSaveable { mutableStateOf(false) }
     var networkStats by remember { mutableStateOf<NetworkStats?>(null) }
     var cacheSize by remember { mutableStateOf<Long?>(null) }
@@ -241,6 +244,20 @@ fun SettingsScreen(
                                 title = stringResource(R.string.settings_wifi_only_downloads),
                                 subtitle = stringResource(R.string.settings_wifi_only_downloads_description),
                                 switch = wifiOnlyDownloads to onWifiOnlyDownloadsChange,
+                            )
+                            val downloadLimitSubtitle =
+                                if (downloadLimitMb <= 0) {
+                                    stringResource(R.string.settings_download_limit_no_limit)
+                                } else {
+                                    stringResource(
+                                        R.string.settings_download_limit_summary,
+                                        cacheLimitLabel(downloadLimitMb),
+                                    )
+                                }
+                            SettingItem(
+                                title = stringResource(R.string.settings_download_limit),
+                                subtitle = downloadLimitSubtitle,
+                                onClick = { showDownloadLimitDialog = true },
                             )
                         }
                     }
@@ -406,6 +423,17 @@ fun SettingsScreen(
             onDismiss = { showDownloadConcurrencyDialog = false },
         )
     }
+    if (showDownloadLimitDialog) {
+        DownloadLimitDialog(
+            current = downloadLimitMb,
+            onSelect = { mb ->
+                onDownloadLimitChange(mb)
+                showDownloadLimitDialog = false
+                AppGraph.downloadManager.trimToStorageLimit()
+            },
+            onDismiss = { showDownloadLimitDialog = false },
+        )
+    }
     if (showNetworkStatsDialog) {
         NetworkStatsDialog(
             stats = networkStats ?: AppGraph.networkMetrics(),
@@ -425,6 +453,7 @@ private fun ThemeMode.labelRes(): Int =
 private val PrefetchOptions = listOf(3, 6, 10)
 private val CacheLimitOptions = listOf(512, 1024, 2048)
 private val DownloadConcurrencyOptions = listOf(1, 2, 3, 5)
+private val DownloadLimitOptions = listOf(0, 2048, 4096, 8192, 16384)
 private const val LOW_MEMORY_CACHE_LIMIT_MB = 256
 
 private fun cacheLimitLabel(mb: Int): String =
@@ -544,6 +573,55 @@ private fun DownloadConcurrencyDialog(
                         Spacer(Modifier.width(12.dp))
                         Text(
                             text = stringResource(R.string.settings_download_concurrency_option, value),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        },
+    )
+}
+
+@Composable
+private fun DownloadLimitDialog(
+    current: Int,
+    onSelect: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.settings_download_limit)) },
+        text = {
+            Column {
+                DownloadLimitOptions.forEach { mb ->
+                    val label =
+                        if (mb <= 0) {
+                            stringResource(R.string.settings_download_limit_unlimited)
+                        } else {
+                            cacheLimitLabel(mb)
+                        }
+                    Row(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .selectable(
+                                    selected = mb == current,
+                                    role = Role.RadioButton,
+                                    onClick = { onSelect(mb) },
+                                ).padding(horizontal = 8.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = mb == current, onClick = null)
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            text = label,
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurface,
                         )

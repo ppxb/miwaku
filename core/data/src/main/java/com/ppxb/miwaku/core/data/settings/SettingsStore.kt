@@ -54,6 +54,9 @@ class SettingsStore(context: Context) {
     private val _wifiOnlyDownloads = MutableStateFlow(prefs.getBoolean(KEY_WIFI_ONLY_DOWNLOADS, false))
     val wifiOnlyDownloads: StateFlow<Boolean> = _wifiOnlyDownloads.asStateFlow()
 
+    private val _downloadLimitMb = MutableStateFlow(readDownloadLimitMb())
+    val downloadLimitMb: StateFlow<Int> = _downloadLimitMb.asStateFlow()
+
     fun setThemeMode(mode: ThemeMode) {
         _themeMode.value = mode
         prefs.edit { putString(KEY_THEME_MODE, mode.name) }
@@ -122,6 +125,12 @@ class SettingsStore(context: Context) {
         prefs.edit { putBoolean(KEY_WIFI_ONLY_DOWNLOADS, enabled) }
     }
 
+    fun setDownloadLimitMb(mb: Int) {
+        val safe = mb.coerceIn(MIN_DOWNLOAD_LIMIT_MB, MAX_DOWNLOAD_LIMIT_MB)
+        _downloadLimitMb.value = safe
+        prefs.edit { putInt(KEY_DOWNLOAD_LIMIT_MB, safe) }
+    }
+
     private fun readCacheLimitMb(): Int =
         prefs.getInt(KEY_CACHE_LIMIT_MB, DEFAULT_CACHE_LIMIT_MB)
             .coerceIn(MIN_CACHE_LIMIT_MB, MAX_CACHE_LIMIT_MB)
@@ -149,6 +158,10 @@ class SettingsStore(context: Context) {
         prefs.getInt(KEY_DOWNLOAD_CONCURRENCY, DEFAULT_DOWNLOAD_CONCURRENCY)
             .coerceIn(MIN_DOWNLOAD_CONCURRENCY, MAX_DOWNLOAD_CONCURRENCY)
 
+    private fun readDownloadLimitMb(): Int =
+        prefs.getInt(KEY_DOWNLOAD_LIMIT_MB, DEFAULT_DOWNLOAD_LIMIT_MB)
+            .coerceIn(MIN_DOWNLOAD_LIMIT_MB, MAX_DOWNLOAD_LIMIT_MB)
+
     private companion object {
         const val KEY_THEME_MODE = "theme_mode"
         const val KEY_LIQUID_GLASS = "liquid_glass"
@@ -163,9 +176,13 @@ class SettingsStore(context: Context) {
         const val KEY_READER_DEFAULT_MODE = "reader_default_mode"
         const val KEY_DOWNLOAD_CONCURRENCY = "download_page_concurrency"
         const val KEY_WIFI_ONLY_DOWNLOADS = "wifi_only_downloads"
+        const val KEY_DOWNLOAD_LIMIT_MB = "download_limit_mb"
         const val DEFAULT_DOWNLOAD_CONCURRENCY = 3
         const val MIN_DOWNLOAD_CONCURRENCY = 1
         const val MAX_DOWNLOAD_CONCURRENCY = 5
+        const val DEFAULT_DOWNLOAD_LIMIT_MB = 0
+        const val MIN_DOWNLOAD_LIMIT_MB = 0
+        const val MAX_DOWNLOAD_LIMIT_MB = 16384
         const val DEFAULT_PREFETCH_AHEAD = 6
         const val MIN_PREFETCH_AHEAD = 3
         const val MAX_PREFETCH_AHEAD = 10

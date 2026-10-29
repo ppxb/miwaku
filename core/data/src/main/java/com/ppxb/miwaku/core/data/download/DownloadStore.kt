@@ -124,6 +124,17 @@ class DownloadStore(context: Context) {
         _downloaded.update { it - chapterId }
     }
 
+    fun chapterSizeBytes(chapterId: String): Long = chapterDir(chapterId).sizeBytes()
+
+    fun downloadSizeBytes(): Long =
+        root.listFiles()
+            ?.filter { it.isDirectory }
+            ?.sumOf { it.sizeBytes() }
+            ?: 0L
+
+    private fun File.sizeBytes(): Long =
+        walkTopDown().filter { it.isFile }.sumOf { it.length() }
+
     fun loadTasks(): List<DownloadTask> {
         if (!tasksFile.isFile) return emptyList()
         return runCatching {

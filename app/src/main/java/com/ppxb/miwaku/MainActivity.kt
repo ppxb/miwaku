@@ -62,6 +62,7 @@ class MainActivity : ComponentActivity() {
             val cacheLimitMb by settings.readerCacheLimitMb.collectAsState()
             val downloadConcurrency by settings.downloadPageConcurrency.collectAsState()
             val wifiOnlyDownloads by settings.wifiOnlyDownloads.collectAsState()
+            val downloadLimitMb by settings.downloadLimitMb.collectAsState()
             val keepScreenOn by settings.keepScreenOn.collectAsState()
             val darkTheme =
                 when (themeMode) {
@@ -90,6 +91,8 @@ class MainActivity : ComponentActivity() {
                     onDownloadConcurrencyChange = settings::setDownloadPageConcurrency,
                     wifiOnlyDownloads = wifiOnlyDownloads,
                     onWifiOnlyDownloadsChange = settings::setWifiOnlyDownloads,
+                    downloadLimitMb = downloadLimitMb,
+                    onDownloadLimitChange = settings::setDownloadLimitMb,
                     keepScreenOn = keepScreenOn,
                 )
             }
