@@ -22,13 +22,54 @@ internal object Codec {
         return null
     }
 
+    private val SERVER_ARRAY_REGEX =
+        Regex(""""Server"\s*:\s*\[(.*?)\]""", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
+    private val STRING_ITEM_REGEX = Regex(""""([^"]+)"""")
+
+    /**
+     * Decrypts the remote domain server list payload fetched from Bytepluses.
+     * The payload is AES-ECB encrypted with the MD5 hex of [ApiConfig.HOST_CONFIG_SECRET].
+     */
+    @SuppressLint("GetInstance")
+    fun decodeHostConfig(raw: String): List<String>? =
+        runCatching {
+            val cleaned = raw.dropWhile { it.code > 127 || it.isWhitespace() }.trim()
+            if (cleaned.isEmpty()) return null
+            val normalized = normalizeBase64(cleaned)
+            val key = SecretKeySpec(md5Hex(ApiConfig.HOST_CONFIG_SECRET).toByteArray(Charsets.UTF_8), "AES")
+            val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
+            cipher.init(Cipher.DECRYPT_MODE, key)
+            val decryptedBytes = cipher.doFinal(decodeBase64(normalized))
+            val text = String(decryptedBytes, Charsets.UTF_8).trim().removePrefix("\uFEFF")
+            val arrayContent = SERVER_ARRAY_REGEX.find(text)?.groupValues?.get(1) ?: return null
+            val domains = STRING_ITEM_REGEX.findAll(arrayContent).map { it.groupValues[1] }.toList()
+            domains.mapNotNull { domain ->
+                val trimmed = domain.trim().trimEnd('/')
+                if (trimmed.isEmpty()) {
+                    null
+                } else if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+                    trimmed
+                } else {
+                    "https://$trimmed"
+                }
+            }.distinct().ifEmpty { null }
+        }.getOrNull()
+
     @SuppressLint("GetInstance") // The remote protocol mandates AES-ECB for response decoding.
     private fun decrypt(data: String, ts: Long, secret: String): String {
         val normalized = normalizeBase64(data)
         val key = SecretKeySpec(md5Hex("$ts$secret").toByteArray(Charsets.UTF_8), "AES")
         val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
         cipher.init(Cipher.DECRYPT_MODE, key)
-        return String(cipher.doFinal(Base64.decode(normalized, Base64.DEFAULT)), Charsets.UTF_8)
+        return String(cipher.doFinal(decodeBase64(normalized)), Charsets.UTF_8)
+    }
+
+    private fun decodeBase64(str: String): ByteArray {
+        return try {
+            java.util.Base64.getDecoder().decode(str)
+        } catch (_: Throwable) {
+            Base64.decode(str, Base64.DEFAULT)
+        }
     }
 
     private fun normalizeBase64(raw: String): String {

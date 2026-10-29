@@ -40,11 +40,15 @@ class ApiClient(
     private val settingStore: SettingSnapshotStore? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val domainResolver = DomainResolver(httpClient)
     private val settingLock = Mutex()
     private val imageHostLock = Mutex()
 
     @Volatile
     private var snapshot: SettingSnapshot? = null
+
+    @Volatile
+    private var orderedBases: List<String> = emptyList()
 
     @Volatile
     private var cacheLoaded = false
@@ -109,9 +113,18 @@ class ApiClient(
                 return imageHost()
             }
             lastImageHostRefreshAt = elapsedMs()
+            val candidates =
+                if (orderedBases.isNotEmpty()) {
+                    orderedBases
+                } else {
+                    domainResolver.resolveCandidateDomains()
+                }
             val probed =
                 try {
-                    probeSetting(IMAGE_HOST_PROBE_TIMEOUT_MS)
+                    domainResolver.probeSetting(
+                        candidates = candidates,
+                        timeoutMs = IMAGE_HOST_PROBE_TIMEOUT_MS,
+                    ).snapshot
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: ApiFailure) {
@@ -141,7 +154,8 @@ class ApiClient(
         val candidates =
             buildList {
                 add(setting.baseUrl)
-                ApiConfig.API_BASES.firstOrNull { it != setting.baseUrl }?.let(::add)
+                orderedBases.filter { it != setting.baseUrl }.forEach(::add)
+                ApiConfig.API_BASES.filter { it !in this }.forEach(::add)
             }
         var lastFailure: ApiFailure? = null
         candidates.forEachIndexed { index, base ->
@@ -179,47 +193,17 @@ class ApiClient(
         perf { "api_base_adopted host=${base.hostName()}" }
     }
 
-    private suspend fun probeSetting(budgetMs: Long = SETTING_TOTAL_TIMEOUT_MS): SettingSnapshot {
-        val started = elapsedMs()
-        val deadline = started + budgetMs
-        val failures = mutableListOf<String>()
-        for (base in ApiConfig.API_BASES) {
-            val remaining = deadline - elapsedMs()
-            if (remaining <= 0) break
-            val ts = now()
-            try {
-                val payload =
-                    requestJson(
-                        base = base,
-                        path = "/setting",
-                        params = mapOf("app_img_shunt" to "1", "t" to "$ts"),
-                        ts = ts,
-                        version = ApiConfig.APP_VERSION,
-                        callTimeoutMs = minOf(SETTING_TIMEOUT_MS, remaining),
-                    ) as? JSONObject ?: throw ApiFailure.Decode("unexpected setting payload")
-                val version = payload.string("jm3_version")
-                val imageHost = payload.string("img_host").trimEnd('/')
-                if (version.isEmpty() || imageHost.isEmpty()) {
-                    throw ApiFailure.Decode("missing jm3_version/img_host")
-                }
-                perf { "setting_probed host=${base.hostName()} ms=${elapsedMs() - started}" }
-                return SettingSnapshot(base, version, imageHost)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: ApiFailure) {
-                failures += "${base.hostName()}: ${e.message}"
-            }
-        }
-        perf { "setting_failed count=${failures.size}" }
-        throw ApiFailure.Network(failures.joinToString("; ").ifEmpty { "setting unavailable" })
-    }
-
     private suspend fun loadSetting(): SettingSnapshot {
         val started = elapsedMs()
-        val setting = probeSetting()
+        val candidates = domainResolver.resolveCandidateDomains()
+        val probeResult = domainResolver.probeSetting(candidates)
+        val setting = probeResult.snapshot
+        orderedBases = probeResult.orderedBases
         snapshot = setting
         settingStore?.write(setting)
-        perf { "setting_loaded host=${setting.baseUrl.hostName()} ms=${elapsedMs() - started}" }
+        perf {
+            "setting_loaded host=${setting.baseUrl.hostName()} latency=${probeResult.latencyMs}ms available=${probeResult.orderedBases.size} ms=${elapsedMs() - started}"
+        }
         return setting
     }
 
@@ -311,14 +295,16 @@ class ApiClient(
     private fun elapsedMs(): Long = System.nanoTime() / 1_000_000L
 
     private fun perf(message: () -> String) {
-        if (Log.isLoggable(PERF_TAG, Log.DEBUG)) {
-            Log.d(PERF_TAG, message())
+        try {
+            if (Log.isLoggable(PERF_TAG, Log.DEBUG)) {
+                Log.d(PERF_TAG, message())
+            }
+        } catch (_: Throwable) {
+            // Android Log is not mocked when running in JVM unit tests
         }
     }
 
     private companion object {
-        const val SETTING_TIMEOUT_MS = 8_000L
-        const val SETTING_TOTAL_TIMEOUT_MS = 20_000L
         const val IMAGE_HOST_PROBE_TIMEOUT_MS = 6_000L
         const val REQUEST_TIMEOUT_MS = 20_000L
         const val IMAGE_HOST_REFRESH_THROTTLE_MS = 30_000L
