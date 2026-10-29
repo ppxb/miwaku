@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ppxb.miwaku.R
 import com.ppxb.miwaku.model.ComicSummary
+import com.ppxb.miwaku.ui.component.AmbientGlow
 import com.ppxb.miwaku.ui.component.ComicGrid
 import com.ppxb.miwaku.ui.component.EmptyState
 import com.ppxb.miwaku.ui.component.topBarBlurStyle
@@ -63,6 +64,10 @@ internal fun HomeScreen(
     }
 
     Box(modifier.fillMaxSize()) {
+        AmbientGlow(
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.align(Alignment.TopCenter),
+        )
         if (history.isEmpty()) {
             EmptyState(
                 icon = Icons.Rounded.AutoStories,
