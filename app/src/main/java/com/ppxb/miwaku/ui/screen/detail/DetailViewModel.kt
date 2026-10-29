@@ -53,6 +53,12 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
 
     val downloadedChapters: StateFlow<Set<String>> = AppGraph.downloadStore.downloaded
 
+    val isFavorite: StateFlow<Boolean> =
+        combine(AppGraph.favorites.entries, state) { favorites, ui ->
+            val albumId = (ui as? DetailUiState.Content)?.detail?.id ?: id
+            favorites.any { it.id == albumId }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
     private var loadJob: Job? = null
     private var prefetchJob: Job? = null
     private var refreshJob: Job? = null
@@ -106,7 +112,16 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
                         ReaderPerf.log { "detail_refresh_failed id=$id" }
                         return@launch
                     }
-                show(refreshed)
+                // The cached detail may carry an older image host. Keeping the already shown
+                // cover URL avoids a second Coil request/flash when only the host rotated.
+                val visible = (state.value as? DetailUiState.Content)?.detail
+                val merged =
+                    if (visible != null && visible.id == refreshed.id && visible.coverUrl.isNotBlank()) {
+                        refreshed.copy(coverUrl = visible.coverUrl)
+                    } else {
+                        refreshed
+                    }
+                show(merged)
                 prefetchFirstChapter(refreshed)
                 ReaderPerf.log {
                     "detail_refresh_done id=$id chapters=${refreshed.chapters.size} ms=${ReaderPerf.mark() - started}"
@@ -141,6 +156,22 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
     fun downloadChapter(chapter: ChapterSummary) {
         val detail = (state.value as? DetailUiState.Content)?.detail ?: return
         enqueue(detail, listOf(chapter))
+    }
+
+    fun toggleFavorite() {
+        val detail = (state.value as? DetailUiState.Content)?.detail ?: return
+        AppGraph.favorites.toggle(
+            ComicSummary(
+                id = detail.id,
+                title = detail.title,
+                author = detail.author,
+                coverUrl = detail.coverUrl,
+            ),
+        )
+    }
+
+    fun refresh() {
+        refreshInBackground()
     }
 
     private fun anchorIndex(detail: ComicDetail): Int {

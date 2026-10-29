@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import com.ppxb.miwaku.core.data.download.DownloadManager
 import com.ppxb.miwaku.core.data.download.DownloadStore
+import com.ppxb.miwaku.core.data.favorites.FavoritesStore
 import com.ppxb.miwaku.core.data.image.ChapterManifestCache
 import com.ppxb.miwaku.core.data.image.PageImageStore
 import com.ppxb.miwaku.core.data.settings.SettingsStore
@@ -103,6 +104,7 @@ object AppGraph {
         )
     }
     val history: HistoryStore by lazy { HistoryStore(appContext) }
+    val favorites: FavoritesStore by lazy { FavoritesStore(appContext) }
     val progress: ProgressStore by lazy { ProgressStore(appContext) }
     val readerModes: ReaderModeStore by lazy { ReaderModeStore(appContext) }
 

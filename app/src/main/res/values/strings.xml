@@ -59,6 +59,11 @@
     <string name="detail_download_next_25">后续 25 章</string>
     <string name="detail_download_unread">未读</string>
     <string name="detail_downloaded">已下载</string>
+    <string name="detail_more">更多</string>
+    <string name="detail_refresh">刷新</string>
+    <string name="detail_share">分享</string>
+    <string name="detail_favorite">收藏</string>
+    <string name="detail_unfavorite">取消收藏</string>
     <string name="detail_chapter_count">%1$d 话</string>
     <string name="detail_no_chapters">暂无章节</string>
     <string name="detail_description_more">展开</string>

@@ -116,7 +116,12 @@ fun MiwakuApp(
                     placeholderCovers = placeholderCovers,
                 )
             }
-            composable<FavoritesRoute> { FavoritesScreen() }
+            composable<FavoritesRoute> {
+                FavoritesScreen(
+                    onOpenComic = { navController.navigateToDetail(it.id) },
+                    placeholderCovers = placeholderCovers,
+                )
+            }
             composable<ExploreRoute> {
                 ExploreScreen(
                     onOpenComic = { navController.navigateToDetail(it.id) },
