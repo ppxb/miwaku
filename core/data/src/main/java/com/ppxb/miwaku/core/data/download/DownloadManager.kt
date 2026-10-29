@@ -152,6 +152,30 @@ class DownloadManager(
         persist(force = true)
     }
 
+    /** Deletes a finished task and its files; active tasks must be paused/stopped first. */
+    fun deleteFinished(chapterId: String) {
+        val task = _tasks.value.firstOrNull { it.chapterId == chapterId } ?: return
+        if (task.state != DownloadState.Completed && task.state != DownloadState.Failed) return
+        _tasks.update { list -> list.filterNot { it.chapterId == chapterId } }
+        persist(force = true)
+        scope.launch {
+            store.deleteChapter(chapterId)
+            store.refreshDownloaded()
+        }
+    }
+
+    /** Deletes every completed task and its files, leaving queued/failed tasks intact. */
+    fun clearCompleted() {
+        val completed = _tasks.value.filter { it.state == DownloadState.Completed }.map { it.chapterId }
+        if (completed.isEmpty()) return
+        _tasks.update { list -> list.filterNot { it.state == DownloadState.Completed } }
+        persist(force = true)
+        scope.launch {
+            completed.forEach { store.deleteChapter(it) }
+            store.refreshDownloaded()
+        }
+    }
+
     private fun start() {
         if (paused) return
         if (worker?.isActive == true) return

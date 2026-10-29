@@ -118,6 +118,12 @@ class DownloadStore(context: Context) {
         _downloaded.update { it + chapter.chapterId }
     }
 
+    /** Removes a chapter's directory and its downloaded flag. Call from an IO thread. */
+    fun deleteChapter(chapterId: String) {
+        chapterDir(chapterId).deleteRecursively()
+        _downloaded.update { it - chapterId }
+    }
+
     fun loadTasks(): List<DownloadTask> {
         if (!tasksFile.isFile) return emptyList()
         return runCatching {

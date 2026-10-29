@@ -58,6 +58,12 @@
     <string name="detail_download_next_10">后续 10 章</string>
     <string name="detail_download_next_25">后续 25 章</string>
     <string name="detail_download_unread">未读</string>
+    <string name="downloads_delete">删除下载</string>
+    <string name="downloads_delete_message">删除「%1$s」及本地文件？</string>
+    <string name="downloads_delete_confirm">删除</string>
+    <string name="downloads_clear_completed">清空已完成</string>
+    <string name="downloads_clear_completed_message">删除所有已完成任务及其本地文件？</string>
+    <string name="downloads_cancel">取消</string>
     <string name="download_notification_channel">下载</string>
     <string name="download_notification_channel_description">章节下载进度</string>
     <string name="download_notification_title">正在下载</string>
