@@ -4,41 +4,49 @@ import android.content.Context
 import coil3.request.CachePolicy
 import coil3.request.ImageRequest
 import coil3.request.crossfade
-import coil3.request.maxBitmapSize
+import coil3.request.transformations
 import coil3.size.Dimension
 import coil3.size.Size
 import com.ppxb.miwaku.core.data.image.PageImage
-import com.ppxb.miwaku.core.data.AppGraph
-import com.ppxb.miwaku.ui.screen.reader.ScrambleDecoder
+import com.ppxb.miwaku.ui.reader.ScrambleTransformation
 import java.io.File
 
 internal object PageImageRequests {
+    /**
+     * [data] is whatever Coil can fetch: a cached file today, an archive entry once the CBZ fetcher
+     * exists. [cacheKey] must identify that source, because the memory cache is keyed by it and a
+     * rewritten page has to produce a different key.
+     */
+    fun build(
+        context: Context,
+        image: PageImage,
+        data: Any,
+        cacheKey: String,
+        widthPx: Int,
+        attempt: Int,
+    ): ImageRequest {
+        val decodeWidth = if (image.splitCount > 0) 0 else widthPx
+        return ImageRequest.Builder(context)
+            .data(data)
+            .apply {
+                if (image.splitCount > 0) {
+                    size(Size.ORIGINAL)
+                    transformations(ScrambleTransformation(image.splitCount))
+                } else {
+                    size(Dimension.Pixels(widthPx), Dimension.Undefined)
+                }
+            }
+            .memoryCacheKey("$cacheKey:${image.splitCount}:$decodeWidth:$attempt")
+            .diskCachePolicy(CachePolicy.DISABLED)
+            .crossfade(false)
+            .build()
+    }
+
     fun build(
         context: Context,
         image: PageImage,
         file: File,
         widthPx: Int,
         attempt: Int,
-    ): ImageRequest {
-        val decodeWidth = widthPx
-        val budget = if (AppGraph.settings.lowMemory.value)
-            minOf(16L * 1024 * 1024, Runtime.getRuntime().maxMemory() / 8)
-        else minOf(64L * 1024 * 1024, Runtime.getRuntime().maxMemory() / 4)
-        return ImageRequest.Builder(context)
-            .data(file)
-            .apply {
-                if (image.splitCount > 0) {
-                    size(Size.ORIGINAL)
-                    // The custom decoder samples original strip regions into a bounded output.
-                    maxBitmapSize(Size.ORIGINAL)
-                    decoderFactory { _, _, _ -> ScrambleDecoder(file, image.splitCount, widthPx, budget) }
-                } else {
-                    size(Dimension.Pixels(widthPx), Dimension.Undefined)
-                }
-            }
-            .memoryCacheKey("region-v1:${file.absolutePath}:${file.length()}:${image.splitCount}:$decodeWidth:$attempt")
-            .diskCachePolicy(CachePolicy.DISABLED)
-            .crossfade(false)
-            .build()
-    }
+    ): ImageRequest = build(context, image, file, "${file.absolutePath}:${file.length()}", widthPx, attempt)
 }

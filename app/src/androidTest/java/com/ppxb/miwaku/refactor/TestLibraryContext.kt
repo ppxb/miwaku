@@ -5,7 +5,16 @@ import android.content.ContextWrapper
 import android.database.DatabaseErrorHandler
 import android.database.sqlite.SQLiteDatabase
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import com.ppxb.miwaku.core.data.AppGraph
+import com.ppxb.miwaku.core.data.settings.ReadingMode
+import com.ppxb.miwaku.model.ChapterContent
+import com.ppxb.miwaku.model.ChapterSummary
+import com.ppxb.miwaku.model.ComicDetail
+import com.ppxb.miwaku.model.ComicSummary
+import com.ppxb.miwaku.model.ReaderPage
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.UUID
@@ -36,23 +45,45 @@ internal fun testPng(width: Int = 40, height: Int = 60): ByteArray {
     finally { bitmap.recycle() }
 }
 
-/** Generate a highly compressed large PNG without allocating its uncompressed bitmap. */
-internal fun writeSolidPng(file: File, width: Int, height: Int) {
-    val compressed = ByteArrayOutputStream()
-    java.util.zip.DeflaterOutputStream(compressed).use { stream ->
-        val row = ByteArray(width * 3 + 1)
-        repeat(width) { index -> row[index * 3 + 1] = 45; row[index * 3 + 2] = 120; row[index * 3 + 3] = 210.toByte() }
-        repeat(height) { stream.write(row) }
+/**
+ * Seeds a synthetic album into the library and the download store, so tests exercise the real
+ * stores without touching the network.
+ */
+internal suspend fun libraryFixture(chapterCount: Int): ComicDetail {
+    AppGraph.library.awaitReady()
+    AppGraph.settings.setWifiOnlyPrefetch(false)
+    AppGraph.settings.setDefaultReadingMode(ReadingMode.Webtoon)
+    val id = "reader-fixture-" + System.nanoTime()
+    val chapters = (1..chapterCount).map { ChapterSummary(id + "-" + it, "测试章节 " + it, it) }
+    val detail =
+        ComicDetail(
+            id,
+            "阅读器验证 · 合成内容",
+            "本地测试",
+            "用于验证逐章进度与预取，不含线上内容。",
+            emptyList(),
+            "",
+            chapters,
+        )
+    AppGraph.library.saveDetail(detail)
+    for (chapter in chapters) {
+        val pages =
+            (0..1).map { index ->
+                val name = "$index.png"
+                val file = AppGraph.downloadStore.pageFile(chapter.id, index, name)
+                file.parentFile!!.mkdirs()
+                val bitmap = Bitmap.createBitmap(360, 1800, Bitmap.Config.ARGB_8888)
+                val canvas = Canvas(bitmap)
+                canvas.drawColor(if (index == 0) Color.rgb(220, 237, 250) else Color.rgb(232, 246, 224))
+                val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(30, 50, 70); textSize = 24f }
+                canvas.drawText("CHAPTER " + chapter.sort + " / PAGE " + (index + 1), 16f, 64f, paint)
+                canvas.drawText("END OF PAGE " + (index + 1), 16f, 1760f, paint)
+                file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                bitmap.recycle()
+                ReaderPage("https://example.invalid/media/photos/" + chapter.id + "/" + name, 0, name)
+            }
+        AppGraph.library.saveChapter(ChapterContent(id, chapter.id, chapter.name, pages), "https://example.invalid")
     }
-    java.io.DataOutputStream(file.outputStream()).use { output ->
-        output.write(byteArrayOf(-119, 80, 78, 71, 13, 10, 26, 10))
-        fun chunk(name: String, bytes: ByteArray) {
-            val type = name.toByteArray(Charsets.US_ASCII)
-            val crc = java.util.zip.CRC32().apply { update(type); update(bytes) }
-            output.writeInt(bytes.size); output.write(type); output.write(bytes); output.writeInt(crc.value.toInt())
-        }
-        val header = ByteArrayOutputStream()
-        java.io.DataOutputStream(header).use { it.writeInt(width); it.writeInt(height); it.write(byteArrayOf(8, 2, 0, 0, 0)) }
-        chunk("IHDR", header.toByteArray()); chunk("IDAT", compressed.toByteArray()); chunk("IEND", byteArrayOf())
-    }
+    AppGraph.library.recordVisit(ComicSummary(id, detail.title, detail.author, detail.coverUrl))
+    return detail
 }

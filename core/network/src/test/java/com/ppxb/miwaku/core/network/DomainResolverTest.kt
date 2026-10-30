@@ -30,14 +30,6 @@ class DomainResolverTest {
         return java.util.Base64.getEncoder().encodeToString(encrypted)
     }
 
-    private fun encryptPayload(json: String, ts: Long, secret: String = ApiConfig.DATA_SECRETS.first()): String {
-        val key = SecretKeySpec(md5Hex("$ts$secret").toByteArray(Charsets.UTF_8), "AES")
-        val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
-        cipher.init(Cipher.ENCRYPT_MODE, key)
-        val encrypted = cipher.doFinal(json.toByteArray(Charsets.UTF_8))
-        return java.util.Base64.getEncoder().encodeToString(encrypted)
-    }
-
     @Test
     fun testDecodeHostConfig_success() {
         val json = """{"Server": ["www.cdnhjk.net", "cdngwc.cc/", "https://cdngwc.net"]}"""

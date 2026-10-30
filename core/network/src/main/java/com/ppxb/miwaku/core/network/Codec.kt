@@ -12,10 +12,19 @@ internal object Codec {
 
     fun tokenParam(ts: Long, version: String = ApiConfig.APP_VERSION): String = "$ts,$version"
 
-    /** Returns the decrypted JSON text, trying each known data secret. */
+    /**
+     * Returns the JSON text carried by `data`, trying each known data secret.
+     *
+     * Some mirrors answer with the payload already in clear text instead of a base64/AES envelope.
+     * Base64 never starts with `{` or `[`, so the plaintext check cannot shadow a ciphertext.
+     */
     fun decodeJson(data: String, ts: Long): String? {
+        val trimmed = data.trim().removePrefix("\uFEFF")
+        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+            return trimmed
+        }
         for (secret in ApiConfig.DATA_SECRETS) {
-            val text = runCatching { decrypt(data, ts, secret) }.getOrNull()?.trim()?.removePrefix("\uFEFF")
+            val text = runCatching { decrypt(trimmed, ts, secret) }.getOrNull()?.trim()?.removePrefix("\uFEFF")
             if (text != null && (text.startsWith("{") || text.startsWith("["))) {
                 return text
             }

@@ -22,7 +22,7 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class DownloadRecoveryTest {
     @Test fun failureToPersistFailedStatePausesAndCanResume() = runBlocking {
-        val detail = ReaderSessionTest().fixture(1)
+        val detail = libraryFixture(1)
         val context = TestLibraryContext(InstrumentationRegistry.getInstrumentation().targetContext)
         val library = LibraryStore(context)
         val db = LibraryDatabase.open(context)

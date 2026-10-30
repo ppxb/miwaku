@@ -1,14 +1,8 @@
 package com.ppxb.miwaku.refactor
 
-import android.graphics.Bitmap
-import android.graphics.Color
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import coil3.BitmapImage
 import com.ppxb.miwaku.core.data.image.*
-import com.ppxb.miwaku.ui.screen.reader.PageDemand
-import com.ppxb.miwaku.ui.screen.reader.ReaderPrefetcher
-import com.ppxb.miwaku.ui.screen.reader.ScrambleDecoder
 import java.io.Closeable
 import java.io.File
 import java.net.InetAddress
@@ -97,70 +91,6 @@ class ImagePipelineTest {
             assertEquals("/target", server.paths[3])
             server.releaseAll(); held.awaitAll()
         } finally { server.close(); context.recycle() }
-    }
-
-    @Test fun overlappingPrefetchWindowsKeepTheirOriginalRequests() = runBlocking {
-        val context = context()
-        val server = ControlledImages(3)
-        try {
-            val store = store(context)
-            val ready = AtomicInteger()
-            val prefetcher = ReaderPrefetcher(this, store, { ready.incrementAndGet() }, { fail("unexpected page failure") })
-            val pages = (1..3).map { image(server, "page" + it) }
-            prefetcher.update(pages.map { PageDemand(it, PagePriority.Nearby) })
-            server.awaitHeaders()
-            prefetcher.update(pages.mapIndexed { index, image -> PageDemand(image, if (index == 1) PagePriority.Visible else PagePriority.Nearby) })
-            server.releaseAll()
-            withTimeout(5_000) { while (ready.get() != 3) delay(20) }
-            assertEquals(3, server.paths.size)
-            prefetcher.cancel()
-        } finally { server.close(); context.recycle() }
-    }
-
-    @Test fun stripDecoderPreservesOriginalRemainderBoundaries() = runBlocking {
-        val context = context()
-        try {
-            val bitmap = Bitmap.createBitmap(4, 10, Bitmap.Config.ARGB_8888)
-            repeat(10) { y -> repeat(4) { x -> bitmap.setPixel(x, y, Color.rgb(y * 20, 0, 0)) } }
-            val file = File(context.cacheDir, "strips.png")
-            file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-            bitmap.recycle()
-            for (budget in listOf(0L, 1024L)) {
-                val decoded = (ScrambleDecoder(file, 3, 4, budget).decode().image as BitmapImage).bitmap
-                try {
-                    val expectedRows = listOf(6, 7, 8, 9, 3, 4, 5, 0, 1, 2)
-                    expectedRows.forEachIndexed { y, original -> assertEquals(Color.rgb(original * 20, 0, 0), decoded.getPixel(2, y)) }
-                } finally { decoded.recycle() }
-            }
-        } finally { context.recycle() }
-    }
-
-    @Test fun longStripProducesBoundedOutput() = runBlocking {
-        val context = context()
-        try {
-            val file = File(context.cacheDir, "long.png").apply { writeBytes(testPng(512, 16_000)) }
-            val result = (ScrambleDecoder(file, 10, 1080).decode().image as BitmapImage).bitmap
-            try {
-                assertTrue(result.height <= 4096)
-                assertTrue(result.width <= 1080)
-                assertEquals(255, Color.alpha(result.getPixel(result.width / 2, result.height - 1)))
-            } finally { result.recycle() }
-        } finally { context.recycle() }
-    }
-
-    @Test fun overBudgetPngUsesSmallRegions() = runBlocking {
-        val context = context()
-        try {
-            val file = File(context.cacheDir, "very-long.png")
-            writeSolidPng(file, 512, 80_000)
-            val decoder = ScrambleDecoder(file, 10, 1080)
-            val result = (decoder.decode().image as BitmapImage).bitmap
-            try {
-                assertEquals("regions", decoder.strategy)
-                assertTrue(decoder.peakBitmapBytes < 2L * 1024 * 1024)
-                assertEquals(Color.rgb(45, 120, 210), result.getPixel(result.width / 2, result.height - 1))
-            } finally { result.recycle() }
-        } finally { context.recycle() }
     }
 
     @Test fun repairedCacheIsPreferredOverBrokenOfflineCopy() = runBlocking {
