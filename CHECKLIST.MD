@@ -32,7 +32,7 @@
 | 探测 | 6 并发（独立 client，不共享业务 3/s 限速与重试），6s 超时，排序 ok→degraded | — | — | 6 并发、5s 超时、三态；走宿主 axios，无限速无重试 | 6 并发，无 degraded |
 | 剔除策略 | Dead 出池；失败 / `Decode` / 403 只降权 + 指数冷却（瞬断 30s、可疑 2min 起，上限 10min），成功清零 | — | — | 探测期 degraded 留池；运行期网络错误即**永久移出缓存池**（无冷却），池剩 1 条不再切换，30min TTL 后重算 | `report_failure` 计数 + 冷却 |
 | 刷新 | 30min TTL + 失败强制刷新 | — | — | 30min 被动 TTL | 2h 定时 + 手动锁定 |
-| 图床 | 池 + 占位图探测，`nextImageHost` 轮换；池空/占位图全灭时落静态兜底 `cdn-msp3.jmdanjonproxy.vip` | — | — | 图床池 + 占位图 `/users/nopic-.gif` 探测 + 静态兜底 `JM_FALLBACK_IMAGE_BASE` | 同插件 |
+| 图床 | 池 = 各线路 `img_host` + 历史池；5s 占位图探测，非 2xx/空 body 留池为 degraded（404 不剔除）；`nextImageHost` 降权轮换，运行期可落兜底 `cdn-msp3.jmdanjonproxy.vip`。实测今天 3 台 | — | — | 池仅取本轮 `img_host`；非 2xx 直接判死、运行期**永久移出**、剩 1 台不再切换；兜底只在 init 池空时用 | 同插件 |
 | 拦截器 | 重试 + 限速（3/s）+ 指标 | DoH + Cloudflare WebView + 限速 | — | 无（宿主负责） | — |
 | UA | 固定常量 | 可配 | — | 随机机型 + 持久 deviceId | — |
 
@@ -236,9 +236,10 @@
 | 图床静态兜底 | `ApiConfig.FALLBACK_IMAGE_BASES`、`ApiClient` | 占位图探测全灭时把 `cdn-msp3.jmdanjonproxy.vip`（插件同源）写进池，`nextImageHost` 在池内无候选时回退到它；实测 200 / 1.0–1.3s |
 | 探测专用传输 | `ApiClient`、`AppGraph.probeHttpClient` | 探测不再经过 `RateLimitInterceptor(3/s)`/`RetryInterceptor`：延迟不含排队、`dead` 只反映网络；真机 6 探针 369ms（独立）vs 1497ms（限速），差 1128ms |
 | 403 归可疑 | `ApiFailure.isSuspicious`、`ApiClient.penalize` | 403 与 `Decode` 同档（2min 起冷却），5xx/超时仍 30s 起；`ApiFailureTest` 4 例覆盖 |
+| 图床探测超时 | `DomainResolver.IMAGE_PROBE_TIMEOUT_MS` | 4s → 5s（与插件一致）：占位图探测的 `dead` 会直接出池，冷启动实测 1.0–2.0s，4s 余量偏薄；真机 4 台两轮全 200 |
 | 测试 | `CodecHostListTest`、`EndpointHealthTest`、`EndpointStateTest`、`EndpointJsonTest`、`EndpointPoolE2ETest`、`ApiFailureTest` | JVM 25 例 + 设备 33 例全绿 |
 
-验证：`:app:lintDebug`、`:app:testDebugUnitTest`、`:core:network:testDebugUnitTest`、`:core:database:testDebugUnitTest` 全部通过；设备侧 `TEST-SM-A5360.xml` 记录 33/33 通过（AGP 任务本身仍报 exit code 1，见下）。兜底二级探测与图床静态兜底改动后各重跑一次 `:core:network:testDebugUnitTest`，编译 + 单测均通过；探测传输拆分后 `:core:network:testDebugUnitTest`、`:app:compileDebugAndroidTestKotlin` 通过，模拟器 `emulator-5554` 上 `EndpointPoolE2ETest` 3/3 通过；403 归类改动后 `:core:network:testDebugUnitTest` 25 例全绿（含新增 `ApiFailureTest` 4 例）。
+验证：`:app:lintDebug`、`:app:testDebugUnitTest`、`:core:network:testDebugUnitTest`、`:core:database:testDebugUnitTest` 全部通过；设备侧 `TEST-SM-A5360.xml` 记录 33/33 通过（AGP 任务本身仍报 exit code 1，见下）。兜底二级探测与图床静态兜底改动后各重跑一次 `:core:network:testDebugUnitTest`，编译 + 单测均通过；探测传输拆分后 `:core:network:testDebugUnitTest`、`:app:compileDebugAndroidTestKotlin` 通过，模拟器 `emulator-5554` 上 `EndpointPoolE2ETest` 3/3 通过；403 归类改动后 `:core:network:testDebugUnitTest` 25 例全绿（含新增 `ApiFailureTest` 4 例）；图床探测超时改 5s 后真机测 4 台 × 2 轮全 200 且均 < 5s。
 
 ### 域名来源实测（2026-10-30，直连 4 轮 + 系统代理 2 轮）
 
@@ -247,6 +248,7 @@
 - 冷启动（取源 + 全候选探测）：我们 4.54s（直连均值）/ 3.35s（代理）；插件 `allSettled` 语义 9.85s / 7.48s，按插件 5s 超时折算仍 ≈8.4s。
 - 5 个候选 `/setting` 全部 ok：`cdngwc.club` 1.3–3.2s、`cdnutc.cc` 1.6–2.8s、`cdnhjk.net` 1.9–2.9s、`cdngwc.net` 1.9–3.2s、`cdngwc.cc` 2.6–5.4s（最慢，从未测速夺冠）。
 - 图床兜底 `cdn-msp3.jmdanjonproxy.vip` 实测 200：占位图 1.0s/3684B，封面 1.25s。
+- 图床池实测：5 条线路通告 **3 台**不同 `img_host`（`tencent.jmdanjonproxy.xyz` 三条线路共享、`cdn-msp.jmapiproxy3.cc`、`cdn-msp.jmdanjonproxy.xyz`），占位图全部 200 / 3684B；模拟器上冷启 1.0–2.0s、热连接 0.25–0.28s，含兜底 4 台均 < 5s。
 - 真机（`emulator-5554`）6 探针：独立 client 369ms，业务限速 client 1497ms（热连接两轮取最好），差 1128ms——拆分前这段排队时间被直接记进了 `latencyMs`。
 - 结论：源清单/密钥/算法/文档结构已与插件对齐；并发策略是有意偏离（更快）；兜底语义已向插件靠拢（默认不参与，失败才用）。
 

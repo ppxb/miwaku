@@ -397,7 +397,7 @@ internal class DomainResolver(
         const val PROBE_TIMEOUT_MS = 6_000L
         const val REMOTE_CONFIG_TIMEOUT_MS = 5_000L
         const val IMAGE_PROBE_CONCURRENCY = 4
-        const val IMAGE_PROBE_TIMEOUT_MS = 4_000L
+        const val IMAGE_PROBE_TIMEOUT_MS = 5_000L
         const val MAX_IMAGE_HOSTS = 4
         private const val PERF_TAG = "ReaderPerf"
 
