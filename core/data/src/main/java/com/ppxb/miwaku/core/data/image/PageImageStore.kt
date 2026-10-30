@@ -67,7 +67,7 @@ class PageImageStore(
     context: Context,
     private val userAgent: String,
     private val httpClient: OkHttpClient,
-    private val alternateImageHost: suspend () -> String? = { null },
+    private val alternateImageHost: suspend (String?) -> String? = { null },
     private val localFile: (PageImage) -> File? = { null },
     private val cacheLimitBytes: () -> Long = { DEFAULT_CACHE_LIMIT_BYTES },
 ) {
@@ -430,8 +430,8 @@ class PageImageStore(
         (this as? ApiFailure)?.canRetryOnAlternateImageHost == true
 
     private suspend fun alternateUrl(image: PageImage): String? {
-        val alternate = alternateImageHost()?.trimEnd('/')?.takeIf { it.isNotBlank() } ?: return null
         val current = image.url.toHttpUrlOrNull() ?: return null
+        val alternate = alternateImageHost(current.host)?.trimEnd('/')?.takeIf { it.isNotBlank() } ?: return null
         val replacement = alternate.toHttpUrlOrNull() ?: return null
         if (current.host == replacement.host && current.port == replacement.port) return null
         return current

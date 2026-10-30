@@ -15,8 +15,7 @@ import com.ppxb.miwaku.core.network.NetworkMetricsInterceptor
 import com.ppxb.miwaku.core.network.PersistentCookieJar
 import com.ppxb.miwaku.core.network.RateLimitInterceptor
 import com.ppxb.miwaku.core.network.RetryInterceptor
-import com.ppxb.miwaku.core.network.SharedEndpointPoolStore
-import com.ppxb.miwaku.core.network.SharedSettingSnapshotStore
+import com.ppxb.miwaku.core.network.SharedEndpointStateStore
 import java.util.concurrent.TimeUnit
 import kotlin.time.Duration.Companion.seconds
 import okhttp3.OkHttpClient
@@ -73,16 +72,15 @@ object AppGraph {
             .build()
     }
 
-    private val settingStore by lazy { SharedSettingSnapshotStore(appContext) }
-    private val endpointPoolStore by lazy { SharedEndpointPoolStore(appContext) }
-    private val apiClient by lazy { ApiClient(apiHttpClient, settingStore, endpointPoolStore) }
+    private val endpointStateStore by lazy { SharedEndpointStateStore(appContext) }
+    private val apiClient by lazy { ApiClient(apiHttpClient, endpointStateStore) }
     val downloadStore by lazy { DownloadStore(appContext, library) }
     val pageStore by lazy {
         PageImageStore(
             context = appContext,
             userAgent = apiClient.userAgent(),
             httpClient = imageHttpClient,
-            alternateImageHost = { apiClient.refreshImageHost() },
+            alternateImageHost = { host -> apiClient.nextImageHost(host) },
             localFile = { image ->
                 downloadStore
                     .pageFile(image.chapterId, image.index, image.fileName)

@@ -5,6 +5,7 @@ import android.util.Base64
 import java.security.MessageDigest
 import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
+import org.json.JSONObject
 
 internal object Codec {
     fun token(ts: Long): String = md5Hex("$ts${ApiConfig.TOKEN_SECRET}")
@@ -46,19 +47,48 @@ internal object Codec {
             cipher.init(Cipher.DECRYPT_MODE, key)
             val decryptedBytes = cipher.doFinal(decodeBase64(normalized))
             val text = String(decryptedBytes, Charsets.UTF_8).trim().removePrefix("\uFEFF")
-            val arrayContent = SERVER_ARRAY_REGEX.find(text)?.groupValues?.get(1) ?: return null
-            val domains = STRING_ITEM_REGEX.findAll(arrayContent).map { it.groupValues[1] }.toList()
-            domains.mapNotNull { domain ->
-                val trimmed = domain.trim().trimEnd('/')
-                if (trimmed.isEmpty()) {
-                    null
-                } else if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-                    trimmed
-                } else {
-                    "https://$trimmed"
-                }
-            }.distinct().ifEmpty { null }
+            parseHostList(text)
         }.getOrNull()
+
+    /**
+     * Parses the decrypted host document. JSON is authoritative; the regex path only exists for
+     * payloads wrapped in a CDN preamble that makes the whole body invalid JSON.
+     */
+    internal fun parseHostList(text: String): List<String>? {
+        val domains = jsonHosts(text) ?: regexHosts(text) ?: return null
+        return domains.mapNotNull(::normalizeHost).distinct().ifEmpty { null }
+    }
+
+    private fun jsonHosts(text: String): List<String>? =
+        runCatching {
+            val array = JSONObject(text).optJSONArray("Server") ?: return@runCatching null
+            buildList {
+                for (index in 0 until array.length()) {
+                    when (val item = array.opt(index)) {
+                        is String -> add(item)
+                        is JSONObject -> add(item.optString("host").ifBlank { item.optString("url") })
+                        else -> Unit
+                    }
+                }
+            }.takeIf { it.isNotEmpty() }
+        }.getOrNull()
+
+    private fun regexHosts(text: String): List<String>? {
+        val arrayContent = SERVER_ARRAY_REGEX.find(text)?.groupValues?.get(1) ?: return null
+        return STRING_ITEM_REGEX.findAll(arrayContent)
+            .map { it.groupValues[1] }
+            .toList()
+            .takeIf { it.isNotEmpty() }
+    }
+
+    private fun normalizeHost(domain: String): String? {
+        val trimmed = domain.trim().trimEnd('/')
+        return when {
+            trimmed.isEmpty() -> null
+            trimmed.startsWith("http://") || trimmed.startsWith("https://") -> trimmed
+            else -> "https://$trimmed"
+        }
+    }
 
     @SuppressLint("GetInstance") // The remote protocol mandates AES-ECB for response decoding.
     private fun decrypt(data: String, ts: Long, secret: String): String {

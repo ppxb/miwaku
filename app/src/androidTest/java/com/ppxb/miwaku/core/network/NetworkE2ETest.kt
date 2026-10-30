@@ -49,10 +49,12 @@ class NetworkE2ETest {
             }
         delay(200)
         val stillRunning = jobs.count { it.isActive }
-        // With a warm page cache the downloads can finish before the delay; that makes the
-        // cancellation path unobservable, so skip instead of failing a precondition.
-        assumeTrue("downloads finished before cancellation, test inconclusive", stillRunning > 0)
-        jobs.forEach { it.cancel() }
+        // With a warm page cache the downloads can finish before the delay, which makes the
+        // cancellation path unobservable. JUnit turns an assumption failure into a build failure
+        // on AGP, so only cancel what is still running and keep the slot-release assertion.
+        if (stillRunning > 0) {
+            jobs.forEach { it.cancel() }
+        }
         jobs.forEach { it.join() }
 
         val elapsed = measureTimeMillis {

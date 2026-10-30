@@ -14,6 +14,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONObject
 
 enum class EndpointStatus { Ok, Degraded, Dead }
 
@@ -36,6 +37,15 @@ data class ProbeResult(
     val orderedBases: List<String>,
     val probes: List<EndpointProbe>,
     val latencyMs: Long,
+)
+
+/** Result of probing one image CDN host with the static placeholder asset. */
+data class ImageHostProbe(
+    val host: String,
+    val status: EndpointStatus,
+    val latencyMs: Long,
+    val httpStatus: Int? = null,
+    val reason: String? = null,
 )
 
 /**
@@ -113,6 +123,68 @@ internal class DomainResolver(
             probes = probes,
             latencyMs = winner.latencyMs,
         )
+    }
+
+    /**
+     * Probes image hosts with the CDN's static placeholder. "Dead" only means the host did not
+     * answer at all; a non-2xx answer stays in the pool as degraded, because a placeholder 404
+     * does not imply that real pages fail on that host.
+     */
+    suspend fun probeImageHosts(
+        hosts: List<String>,
+        concurrency: Int = IMAGE_PROBE_CONCURRENCY,
+        timeoutMs: Long = IMAGE_PROBE_TIMEOUT_MS,
+    ): List<ImageHostProbe> {
+        val unique =
+            hosts.map { it.trim().trimEnd('/') }
+                .filter { it.isNotEmpty() }
+                .distinct()
+                .take(MAX_IMAGE_HOSTS)
+        if (unique.isEmpty()) return emptyList()
+        val semaphore = Semaphore(concurrency)
+        return coroutineScope {
+                unique.map { host ->
+                    async { semaphore.withPermit { probeSingleImage(host, timeoutMs) } }
+                }.awaitAll()
+            }
+            .sortedWith(compareBy({ rank(it.status) }, { it.latencyMs }))
+    }
+
+    private suspend fun probeSingleImage(host: String, timeoutMs: Long): ImageHostProbe {
+        val start = System.nanoTime()
+        return try {
+            val url =
+                "$host$PLACEHOLDER_PATH".toHttpUrlOrNull()
+                    ?: return ImageHostProbe(host, EndpointStatus.Dead, 0L, reason = "invalid url")
+            val request =
+                Request.Builder()
+                    .url(url)
+                    .header("user-agent", ApiConfig.USER_AGENT)
+                    .header("accept", "image/*")
+                    .build()
+            val call = httpClient.newCall(request)
+            call.timeout().timeout(timeoutMs, TimeUnit.MILLISECONDS)
+            val response = call.await()
+            val latency = (System.nanoTime() - start) / 1_000_000L
+            response.use { resp ->
+                val bytes = resp.body?.bytes()?.size ?: 0
+                when {
+                    !resp.isSuccessful ->
+                        ImageHostProbe(host, EndpointStatus.Degraded, latency, resp.code, "HTTP ${resp.code}")
+                    bytes <= 0 ->
+                        ImageHostProbe(host, EndpointStatus.Degraded, latency, resp.code, "empty placeholder")
+                    else -> ImageHostProbe(host, EndpointStatus.Ok, latency, resp.code)
+                }
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            ImageHostProbe(
+                host,
+                EndpointStatus.Dead,
+                (System.nanoTime() - start) / 1_000_000L,
+                reason = e.message ?: "network error",
+            )
+        }
     }
 
     private fun rank(status: EndpointStatus): Int =
@@ -226,9 +298,22 @@ internal class DomainResolver(
                             httpStatus = resp.code,
                             reason = "empty body",
                         )
-                val code = CODE_REGEX.find(body)?.groupValues?.get(1)?.toIntOrNull() ?: -1
+                val outer =
+                    runCatching { JSONObject(body) }.getOrNull()
+                        ?: return EndpointProbe(
+                            baseUrl = base,
+                            status = EndpointStatus.Degraded,
+                            latencyMs = latency,
+                            httpStatus = resp.code,
+                            reason = "non-json body",
+                        )
+                val code = outer.optInt("code", -1)
                 if (code != 200) {
-                    val msg = ERROR_MSG_REGEX.find(body)?.groupValues?.get(1).orEmpty()
+                    val msg =
+                        sequenceOf("errorMsg", "msg", "message")
+                            .map { outer.optString(it) }
+                            .firstOrNull { it.isNotBlank() && it != "null" }
+                            .orEmpty()
                     return EndpointProbe(
                         baseUrl = base,
                         status = EndpointStatus.Degraded,
@@ -238,7 +323,7 @@ internal class DomainResolver(
                     )
                 }
                 val data =
-                    DATA_REGEX.find(body)?.groupValues?.get(1)
+                    outer.optString("data").takeIf { it.isNotBlank() && it != "null" }
                         ?: return EndpointProbe(
                             baseUrl = base,
                             status = EndpointStatus.Degraded,
@@ -255,15 +340,18 @@ internal class DomainResolver(
                             httpStatus = resp.code,
                             reason = "decrypt failed",
                         )
-                val version = VERSION_REGEX.find(decoded)?.groupValues?.get(1).orEmpty().trim()
-                val imageHost =
-                    IMG_HOST_REGEX.find(decoded)
-                        ?.groupValues
-                        ?.get(1)
-                        .orEmpty()
-                        .replace("\\/", "/")
-                        .trimEnd('/')
-                if (version.isEmpty() || imageHost.isEmpty()) {
+                val setting =
+                    runCatching { JSONObject(decoded) }.getOrNull()
+                        ?: return EndpointProbe(
+                            baseUrl = base,
+                            status = EndpointStatus.Degraded,
+                            latencyMs = latency,
+                            httpStatus = resp.code,
+                            reason = "invalid setting json",
+                        )
+                val version = setting.optString("jm3_version").trim()
+                val imageHost = setting.optString("img_host").trim().trimEnd('/')
+                if (version.isEmpty() || version == "null" || imageHost.isEmpty() || imageHost == "null") {
                     return EndpointProbe(
                         baseUrl = base,
                         status = EndpointStatus.Degraded,
@@ -308,12 +396,12 @@ internal class DomainResolver(
         const val DEFAULT_PROBE_CONCURRENCY = 6
         const val PROBE_TIMEOUT_MS = 6_000L
         const val REMOTE_CONFIG_TIMEOUT_MS = 5_000L
+        const val IMAGE_PROBE_CONCURRENCY = 4
+        const val IMAGE_PROBE_TIMEOUT_MS = 4_000L
+        const val MAX_IMAGE_HOSTS = 4
         private const val PERF_TAG = "ReaderPerf"
 
-        private val CODE_REGEX = Regex(""""code"\s*:\s*(\d+)""")
-        private val DATA_REGEX = Regex(""""data"\s*:\s*"([^"]+)"""")
-        private val VERSION_REGEX = Regex(""""jm3_version"\s*:\s*"([^"]+)"""")
-        private val IMG_HOST_REGEX = Regex(""""img_host"\s*:\s*"([^"]+)"""")
-        private val ERROR_MSG_REGEX = Regex(""""(?:errorMsg|message|msg)"\s*:\s*"([^"]+)"""")
+        /** Static placeholder every image CDN serves; a full body proves the host is usable. */
+        private const val PLACEHOLDER_PATH = "/media/users/nopic-.gif"
     }
 }

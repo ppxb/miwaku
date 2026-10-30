@@ -178,9 +178,11 @@
 
 ### P0（先做这三件）
 
-- [ ] A1 端点失败改为「计数 + 冷却」，`Decode` 失败只降权不出池
+- [x] A1 端点失败改为「计数 + 冷却」，`Decode` 失败只降权不出池
+- [x] 配置源解析改为 JSON 优先 + 正则兜底（对象元素、BOM、CDN 前缀都覆盖）
+- [x] 端点状态合并为一份带 `version` 的文档（API 池 + 图床池 + 选择 + 探测时间，迁移旧 `endpoint_pool`/`api_setting`）
 - [ ] A2 新增 `ApiFailure.Unauthorized`，401/「請先登入會員」单独提示
-- [ ] A6 图床池 + 占位图 `/media/users/nopic-.gif` 探测，替换单点 `refreshImageHost`
+- [x] A6 图床池 + 占位图 `/media/users/nopic-.gif` 探测（404 保留为 degraded，不剔除）
 - [ ] A7 UA 随机机型 + 持久 deviceId
 - [ ] B2 下载改 worker pool，`recordPage` 批量提交（验收：150 页 ≤ 30 次事务）
 - [ ] B4 下载直写离线目录，取消「复制后删」（验收：同一页磁盘只有一份）
@@ -217,3 +219,21 @@
 ## 七、一句话
 
 数据与阅读语义已经领先两个阅读器，图片解码有实测优势；落后的是网络容错（可抄）、资产布局与下载工程化（可抄）、阅读器结构（必须自己拆）与功能广度（产品决策）。
+
+---
+
+## 八、本轮已完成（网络层：降权 / 持久化 / 图床池 / JSON）
+
+| 改动 | 文件 | 说明 |
+|---|---|---|
+| 降权模型 | `EndpointHealth` | 失败只降权 + 指数冷却（瞬断 30s 起、`Decode` 2min 起，上限 10min），成功即清零 |
+| 状态文档 v2 | `EndpointState`、`EndpointStateStore` | 一份 SharedPreferences 文档装下 API 池、图床池、当前选择、探测时间；启动时从旧 `endpoint_pool` + `api_setting` 迁移，旧 key 保留 |
+| 客户端 | `ApiClient` | 候选按「健康 → 失败次数 → 延迟」排序，冷却中的端点是最后兜底而不是被删除；`nextImageHost(failedHost)` 取代单点 `refreshImageHost` |
+| 图床池 | `DomainResolver.probeImageHosts` | 汇总各可用线路的 `img_host`，用占位图探测；2xx 且非空=ok，其它响应=degraded，超时=dead |
+| JSON 解析 | `Codec.parseHostList`、`DomainResolver` | 配置源与 `/setting` 信封都改走 `org.json`，正则仅作 CDN 前缀兜底 |
+| 测试 | `CodecHostListTest`、`EndpointHealthTest`、`EndpointStateTest`、`EndpointJsonTest`、`EndpointPoolE2ETest` | JVM 19 例 + 设备 33 例全绿 |
+
+验证：`:app:lintDebug`、`:app:testDebugUnitTest`、`:core:network:testDebugUnitTest`、`:core:database:testDebugUnitTest` 全部通过；设备侧 `TEST-SM-A5360.xml` 记录 33/33 通过（AGP 任务本身仍报 exit code 1，见下）。
+
+已知工具问题：`:app:connectedDebugAndroidTest` 在结果 XML 全绿时仍返回失败（本机 AGP 9.4.1 + 模拟器 SM-A5360 的组合），判定以结果 XML 的 `tests/failures` 为准。
+
