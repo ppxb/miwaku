@@ -1,5 +1,6 @@
 package com.ppxb.miwaku.ui.screen.settings
 
+import android.text.format.DateUtils
 import android.text.format.Formatter
 import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedVisibility
@@ -23,7 +24,9 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
@@ -62,7 +65,10 @@ import androidx.compose.ui.unit.dp
 import com.ppxb.miwaku.R
 import com.ppxb.miwaku.core.data.AppGraph
 import com.ppxb.miwaku.core.data.download.DownloadState
+import com.ppxb.miwaku.core.data.EndpointStatusRow
+import com.ppxb.miwaku.core.data.EndpointSummary
 import com.ppxb.miwaku.core.data.NetworkStats
+import com.ppxb.miwaku.core.data.ProbeStatus
 import com.ppxb.miwaku.core.data.settings.ThemeMode
 import com.ppxb.miwaku.ui.component.AmbientGlow
 import com.ppxb.miwaku.ui.component.SettingGroup
@@ -110,7 +116,9 @@ fun SettingsScreen(
     var showDownloadConcurrencyDialog by rememberSaveable { mutableStateOf(false) }
     var showDownloadLimitDialog by rememberSaveable { mutableStateOf(false) }
     var showNetworkStatsDialog by rememberSaveable { mutableStateOf(false) }
+    var showEndpointDialog by rememberSaveable { mutableStateOf(false) }
     var networkStats by remember { mutableStateOf<NetworkStats?>(null) }
+    var endpointSummary by remember { mutableStateOf<EndpointSummary?>(null) }
     var cacheSize by remember { mutableStateOf<Long?>(null) }
     var downloadSize by remember { mutableStateOf<Long?>(null) }
     val context = LocalContext.current
@@ -314,6 +322,20 @@ fun SettingsScreen(
                                 switch = placeholderCovers to onPlaceholderCoversChange,
                             )
                             val metrics = AppGraph.networkMetrics()
+                            val endpoints = AppGraph.endpointSummary()
+                            SettingItem(
+                                title = stringResource(R.string.settings_endpoint_state),
+                                subtitle =
+                                    stringResource(
+                                        R.string.settings_endpoint_state_summary,
+                                        endpoints.api.size,
+                                        endpoints.image.size,
+                                    ),
+                                onClick = {
+                                    endpointSummary = AppGraph.endpointSummary()
+                                    showEndpointDialog = true
+                                },
+                            )
                             SettingItem(
                                 title = stringResource(R.string.settings_network_stats),
                                 subtitle =
@@ -455,6 +477,12 @@ fun SettingsScreen(
         NetworkStatsDialog(
             stats = networkStats ?: AppGraph.networkMetrics(),
             onDismiss = { showNetworkStatsDialog = false },
+        )
+    }
+    if (showEndpointDialog) {
+        EndpointStateDialog(
+            summary = endpointSummary ?: AppGraph.endpointSummary(),
+            onDismiss = { showEndpointDialog = false },
         )
     }
 }
@@ -704,6 +732,98 @@ private fun StatRow(label: String, value: String) {
         )
     }
 }
+
+@Composable
+private fun EndpointStateDialog(
+    summary: EndpointSummary,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.settings_endpoint_state)) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                StatRow(stringResource(R.string.settings_endpoint_current), summary.chosenApi ?: "—")
+                StatRow(stringResource(R.string.settings_endpoint_version), summary.apiVersion.ifBlank { "—" })
+                StatRow(stringResource(R.string.settings_endpoint_probed), probedLabel(summary.probedAt))
+                Spacer(Modifier.height(12.dp))
+                EndpointSection(stringResource(R.string.settings_endpoint_api_pool), summary.api)
+                Spacer(Modifier.height(12.dp))
+                EndpointSection(stringResource(R.string.settings_endpoint_image_pool), summary.image)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.action_close))
+            }
+        },
+    )
+}
+
+@Composable
+private fun EndpointSection(
+    title: String,
+    rows: List<EndpointStatusRow>,
+) {
+    Text(
+        text = "$title (${rows.size})",
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    if (rows.isEmpty()) {
+        Text(
+            text = stringResource(R.string.settings_endpoint_empty),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+    rows.forEach { row ->
+        val dead = row.probe == ProbeStatus.Dead
+        val primary = MaterialTheme.colorScheme.onSurface
+        val textColor = if (dead) primary.copy(alpha = 0.55f) else primary
+        val secondary = MaterialTheme.colorScheme.onSurfaceVariant
+        val suffix =
+            if (row.serving) " · " + stringResource(R.string.settings_endpoint_serving) else ""
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(text = row.host, style = MaterialTheme.typography.bodyMedium, color = textColor)
+                Text(
+                    text = endpointStatusLabel(row) + suffix,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (dead) textColor else secondary,
+                )
+            }
+            Text(
+                text = if (row.latencyMs > 0L) "${row.latencyMs} ms" else "—",
+                style = MaterialTheme.typography.bodySmall,
+                color = textColor,
+            )
+        }
+    }
+}
+
+@Composable
+private fun endpointStatusLabel(row: EndpointStatusRow): String =
+    when {
+        row.coolingDownMs > 0L ->
+            stringResource(R.string.settings_endpoint_status_cooling, (row.coolingDownMs / 1000L).toInt())
+        row.failures > 0 -> stringResource(R.string.settings_endpoint_status_degraded, row.failures)
+        row.probe == ProbeStatus.Dead -> stringResource(R.string.settings_endpoint_status_probe_dead)
+        row.probe == ProbeStatus.Degraded -> stringResource(R.string.settings_endpoint_status_probe_degraded)
+        else -> stringResource(R.string.settings_endpoint_status_ok)
+    }
+
+private fun probedLabel(timestamp: Long): String =
+    if (timestamp <= 0L) {
+        "—"
+    } else {
+        DateUtils.getRelativeTimeSpanString(timestamp, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS)
+            .toString()
+    }
 
 @Composable
 private fun ThemeDialog(

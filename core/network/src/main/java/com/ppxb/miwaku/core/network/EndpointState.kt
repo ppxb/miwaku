@@ -1,5 +1,14 @@
 package com.ppxb.miwaku.core.network
 
+/** One host as the last probe saw it. Dead hosts never reach the usable pools, only this record. */
+data class ProbeRecord(
+    val url: String,
+    val status: EndpointStatus,
+    val latencyMs: Long,
+    val httpStatus: Int? = null,
+    val reason: String? = null,
+)
+
 /**
  * Everything the transport needs to survive a restart: both pools, their health and the current
  * selection. Keeping them in one document prevents "API switched, image host stale" on a cold start.
@@ -12,6 +21,9 @@ data class EndpointState(
     val image: List<EndpointHealth> = emptyList(),
     val chosenApi: String? = null,
     val chosenImage: String? = null,
+    /** Last probe results, including dead hosts, so diagnostics can explain a shrunken pool. */
+    val apiProbes: List<ProbeRecord> = emptyList(),
+    val imageProbes: List<ProbeRecord> = emptyList(),
 ) {
     /** Null while any part of the selection is missing, which forces a fresh `/setting` probe. */
     fun toSnapshot(): SettingSnapshot? {
@@ -32,7 +44,7 @@ data class EndpointState(
     private fun String?.normalizedOrNull(): String? = this?.trim()?.trimEnd('/')?.takeIf { it.isNotEmpty() }
 
     companion object {
-        const val SCHEMA_VERSION = 2
+        const val SCHEMA_VERSION = 3
         const val MAX_API_POOL = 12
         const val MAX_IMAGE_POOL = 6
     }

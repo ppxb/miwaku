@@ -10,9 +10,12 @@ import com.ppxb.miwaku.core.data.favorites.FavoritesStore
 import com.ppxb.miwaku.core.data.image.PageImageStore
 import com.ppxb.miwaku.core.data.settings.SettingsStore
 import com.ppxb.miwaku.core.network.ApiClient
+import com.ppxb.miwaku.core.network.EndpointHealth
+import com.ppxb.miwaku.core.network.EndpointStatus
 import com.ppxb.miwaku.core.network.NetworkMetrics
 import com.ppxb.miwaku.core.network.NetworkMetricsInterceptor
 import com.ppxb.miwaku.core.network.PersistentCookieJar
+import com.ppxb.miwaku.core.network.ProbeRecord
 import com.ppxb.miwaku.core.network.RateLimitInterceptor
 import com.ppxb.miwaku.core.network.RetryInterceptor
 import com.ppxb.miwaku.core.network.SharedEndpointStateStore
@@ -28,6 +31,28 @@ data class NetworkStats(
     val failovers: Long,
     val throttled: Long,
     val averageMs: Long,
+)
+
+/** One endpoint row for the settings diagnostics. [coolingDownMs] is 0 when the endpoint is usable. */
+data class EndpointStatusRow(
+    val host: String,
+    val latencyMs: Long,
+    val failures: Int,
+    val coolingDownMs: Long,
+    val probe: ProbeStatus? = null,
+    val serving: Boolean = false,
+)
+
+/** What the last probe said about a host, independent of its runtime health. */
+enum class ProbeStatus { Ok, Degraded, Dead }
+
+data class EndpointSummary(
+    val probedAt: Long,
+    val apiVersion: String,
+    val chosenApi: String?,
+    val chosenImage: String?,
+    val api: List<EndpointStatusRow>,
+    val image: List<EndpointStatusRow>,
 )
 
 object AppGraph {
@@ -151,6 +176,66 @@ object AppGraph {
             averageMs = snapshot.averageMs,
         )
     }
+
+    /** Pool/selection snapshot for the settings screen; never triggers a probe. */
+    fun endpointSummary(): EndpointSummary {
+        val snapshot = apiClient.endpointSummary()
+        val now = System.currentTimeMillis()
+        val apiHealth = snapshot.api.associateBy { it.url }
+        val imageHealth = snapshot.image.associateBy { it.url }
+        val apiRows =
+            snapshot.apiProbes.toRows(apiHealth, snapshot.chosenApi, now)
+                .ifEmpty { snapshot.api.toRows(snapshot.chosenApi, now) }
+        val imageRows =
+            snapshot.imageProbes.toRows(imageHealth, snapshot.chosenImage, now)
+                .ifEmpty { snapshot.image.toRows(snapshot.chosenImage, now) }
+        return EndpointSummary(
+            probedAt = snapshot.probedAt,
+            apiVersion = snapshot.apiVersion,
+            chosenApi = snapshot.chosenApi?.toDisplayHost(),
+            chosenImage = snapshot.chosenImage?.toDisplayHost(),
+            api = apiRows,
+            image = imageRows,
+        )
+    }
+
+    private fun List<ProbeRecord>.toRows(
+        health: Map<String, EndpointHealth>,
+        chosen: String?,
+        now: Long,
+    ): List<EndpointStatusRow> =
+        map { record ->
+            val runtime = health[record.url]
+            EndpointStatusRow(
+                host = record.url.toDisplayHost(),
+                latencyMs = record.latencyMs.takeIf { it > 0L } ?: runtime?.latencyMs ?: 0L,
+                failures = runtime?.failures ?: 0,
+                coolingDownMs = ((runtime?.cooldownUntil ?: 0L) - now).coerceAtLeast(0L),
+                probe =
+                    when (record.status) {
+                        EndpointStatus.Ok -> ProbeStatus.Ok
+                        EndpointStatus.Degraded -> ProbeStatus.Degraded
+                        EndpointStatus.Dead -> ProbeStatus.Dead
+                    },
+                serving = record.url == chosen,
+            )
+        }.sortedWith(compareBy({ it.probe != ProbeStatus.Ok }, { it.probe == ProbeStatus.Dead }, { it.latencyMs }))
+
+    private fun List<EndpointHealth>.toRows(
+        chosen: String?,
+        now: Long,
+    ): List<EndpointStatusRow> =
+        map {
+            EndpointStatusRow(
+                host = it.url.toDisplayHost(),
+                latencyMs = it.latencyMs,
+                failures = it.failures,
+                coolingDownMs = (it.cooldownUntil - now).coerceAtLeast(0L),
+                serving = it.url == chosen,
+            )
+        }
+
+    private fun String.toDisplayHost(): String = substringAfter("://").trimEnd('/')
 
     suspend fun clearReaderCache() {
         pageStore.clearCache()

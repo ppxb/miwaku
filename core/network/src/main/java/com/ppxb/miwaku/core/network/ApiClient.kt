@@ -31,6 +31,18 @@ data class ApiPayload(
     val imageHost: String,
 )
 
+/** Read-only pool snapshot for diagnostics; reading it never triggers a probe. */
+data class EndpointPoolSummary(
+    val probedAt: Long,
+    val apiVersion: String,
+    val chosenApi: String?,
+    val chosenImage: String?,
+    val api: List<EndpointHealth>,
+    val image: List<EndpointHealth>,
+    val apiProbes: List<ProbeRecord> = emptyList(),
+    val imageProbes: List<ProbeRecord> = emptyList(),
+)
+
 /**
  * Single-source JM API client.
  *
@@ -56,7 +68,6 @@ class ApiClient(
     private val domainResolver = DomainResolver(probeHttpClient, userAgentValue)
     private val settingLock = Mutex()
     private val poolRefreshLock = Mutex()
-    private val imageRefreshLock = Mutex()
     private val stateLock = Any()
 
     @Volatile
@@ -110,50 +121,64 @@ class ApiClient(
 
     fun imageHost(): String? = currentState().chosenImage
 
+    /** Current pools and selection, for the settings screen. */
+    fun endpointSummary(): EndpointPoolSummary {
+        val current = currentState()
+        return EndpointPoolSummary(
+            probedAt = current.probedAt,
+            apiVersion = current.apiVersion,
+            chosenApi = current.chosenApi,
+            chosenImage = current.chosenImage,
+            api = current.api,
+            image = current.image,
+            apiProbes = current.apiProbes,
+            imageProbes = current.imageProbes,
+        )
+    }
+
     /**
      * Returns an image host other than [failedHost], penalising the host that just failed.
-     * The pool is re-probed at most once per [IMAGE_REFRESH_THROTTLE_MS]; a slow probe never
-     * blocks the caller, which falls back to the least-failed remaining host and finally to the
-     * compile-time fallback CDN.
+     *
+     * The caller is on the page-loading hot path, so this never waits for a probe: it returns the
+     * best remaining host (cooling entries included, then the compile-time fallback CDN) and lets
+     * the throttled pool refresh run in the background.
      */
-    suspend fun nextImageHost(failedHost: String?): String? {
+    fun nextImageHost(failedHost: String?): String? {
         val excluded = failedHost?.trim()?.trimEnd('/')
         if (!excluded.isNullOrEmpty()) penalizeImage(excluded)
         pickImage(excluded)?.let { return it }
-
-        if (elapsedMs() - lastImageRefreshAt >= IMAGE_REFRESH_THROTTLE_MS && imageRefreshLock.tryLock()) {
-            try {
-                lastImageRefreshAt = elapsedMs()
-                refreshPool(force = true)
-            } catch (cancel: CancellationException) {
-                throw cancel
-            } catch (_: Exception) {
-                // Keep serving from the stale pool.
-            } finally {
-                imageRefreshLock.unlock()
-            }
-            pickImage(excluded)?.let { return it }
-        }
+        scheduleImagePoolRefresh()
         return currentState().image.firstOrNull { it.url != excluded }?.url
             ?: ApiConfig.FALLBACK_IMAGE_BASES.firstOrNull { it != excluded }
     }
 
+    private fun scheduleImagePoolRefresh() {
+        if (elapsedMs() - lastImageRefreshAt < IMAGE_REFRESH_THROTTLE_MS) return
+        lastImageRefreshAt = elapsedMs()
+        scope.launch {
+            runCatching { refreshPool(force = true) }
+        }
+    }
+
     /**
-     * Fetches a decoded API payload. The pool is tried in rank order; if every candidate fails
-     * with a failoverable error, the pool is re-probed once and the request retried.
+     * Fetches a decoded API payload. Candidates are tried in rank order inside one
+     * [FAILOVER_BUDGET_MS] deadline; when every candidate fails with a failoverable error the pool
+     * is re-probed once, but only if the deadline still allows another attempt.
      */
     suspend fun getJson(
         path: String,
         params: Map<String, String> = emptyMap(),
     ): ApiPayload {
         val setting = ensureSetting()
+        val deadlineNs = System.nanoTime() + FAILOVER_BUDGET_MS * 1_000_000L
         return try {
-            requestAcrossCandidates(setting, path, params)
+            requestAcrossCandidates(setting, path, params, deadlineNs)
         } catch (e: ApiFailure) {
             if (!e.canFailover) throw e
+            if (remainingMs(deadlineNs) <= MIN_ATTEMPT_MS) throw e
             if (!refreshPool(force = true)) throw e
             val updated = currentState().toSnapshot() ?: throw e
-            requestAcrossCandidates(updated, path, params)
+            requestAcrossCandidates(updated, path, params, deadlineNs)
         }
     }
 
@@ -197,10 +222,14 @@ class ApiClient(
         setting: SettingSnapshot,
         path: String,
         params: Map<String, String>,
+        deadlineNs: Long,
     ): ApiPayload {
         var lastFailure: ApiFailure? = null
         val candidates = candidateBases(setting)
-        candidates.forEachIndexed { index, base ->
+        for ((index, base) in candidates.withIndex()) {
+            val remaining = remainingMs(deadlineNs)
+            if (remaining <= MIN_ATTEMPT_MS) break
+            val attemptCap = if (index == 0) REQUEST_TIMEOUT_MS else FAILOVER_ATTEMPT_TIMEOUT_MS
             try {
                 val ts = now()
                 val value =
@@ -210,7 +239,7 @@ class ApiClient(
                         params = params + ("t" to "$ts"),
                         ts = ts,
                         version = setting.version,
-                        callTimeoutMs = REQUEST_TIMEOUT_MS,
+                        callTimeoutMs = minOf(attemptCap, remaining),
                     )
                 reward(base)
                 if (base != setting.baseUrl) adoptBase(base)
@@ -228,6 +257,8 @@ class ApiClient(
         throw lastFailure ?: ApiFailure.Network("no usable base")
     }
 
+    private fun remainingMs(deadlineNs: Long): Long = (deadlineNs - System.nanoTime()) / 1_000_000L
+
     private fun candidateBases(setting: SettingSnapshot): List<String> {
         val ranking = currentState().rankedApi(System.currentTimeMillis()).map { it.url }
         // Cooling entries stay in the list as a last resort: a degraded base still beats nothing.
@@ -240,12 +271,15 @@ class ApiClient(
     private fun adoptBase(base: String) {
         val normalized = base.trim().trimEnd('/')
         updateState { current ->
-            if (current.chosenApi == normalized && current.api.firstOrNull()?.url == normalized) current
-            else {
+            if (current.chosenApi == normalized && current.api.firstOrNull()?.url == normalized) {
+                current
+            } else {
+                // Keep the probed latency/health of the entry instead of replacing it with a blank one.
+                val entry = current.api.firstOrNull { it.url == normalized } ?: EndpointHealth(normalized)
                 val rest = current.api.filterNot { it.url == normalized }
                 current.copy(
                     chosenApi = normalized,
-                    api = (listOf(EndpointHealth(normalized)) + rest).take(EndpointState.MAX_API_POOL),
+                    api = (listOf(entry) + rest).take(EndpointState.MAX_API_POOL),
                 )
             }
         }
@@ -394,8 +428,11 @@ class ApiClient(
         }
     }
 
-    /** Probes every image host announced by the reachable endpoints, keeping the previous ones. */
-    private suspend fun probeImagePool(probe: ProbeResult): List<EndpointHealth> {
+    /**
+     * Probes every image host announced by the reachable endpoints, keeping the previous ones.
+     * Dead results are returned as [ProbeRecord]s only, so diagnostics can show why a host vanished.
+     */
+    private suspend fun probeImagePool(probe: ProbeResult): ImagePoolResult {
         val now = System.currentTimeMillis()
         val previous = currentState().image
         val previousByHost = previous.associateBy { it.url }
@@ -406,8 +443,9 @@ class ApiClient(
                 .distinct()
                 .take(DomainResolver.MAX_IMAGE_HOSTS)
 
+        val results = domainResolver.probeImageHosts(candidates)
         val probed =
-            domainResolver.probeImageHosts(candidates).mapNotNull { result ->
+            results.mapNotNull { result ->
                 if (result.status == EndpointStatus.Dead) return@mapNotNull null
                 val base = previousByHost[result.host] ?: EndpointHealth(result.host)
                 val ranked = base.copy(latencyMs = result.latencyMs)
@@ -417,14 +455,25 @@ class ApiClient(
                     ranked
                 }
             }
+        val records =
+            results.map {
+                ProbeRecord(it.host, it.status, it.latencyMs, it.httpStatus, it.reason)
+            }
 
-        if (probed.isNotEmpty()) return probed.take(EndpointState.MAX_IMAGE_POOL)
+        if (probed.isNotEmpty()) {
+            return ImagePoolResult(probed.take(EndpointState.MAX_IMAGE_POOL), records)
+        }
         // Every placeholder probe failed: the reference fallback CDN is the last resort, exactly as
         // the plugin treats JM_FALLBACK_IMAGE_BASE when its own image pool comes back empty.
-        return listOf(EndpointHealth(ApiConfig.FALLBACK_IMAGE_BASES.first()))
+        return ImagePoolResult(listOf(EndpointHealth(ApiConfig.FALLBACK_IMAGE_BASES.first())), records)
     }
 
-    private fun buildState(probe: ProbeResult, image: List<EndpointHealth>): EndpointState {
+    private data class ImagePoolResult(
+        val pool: List<EndpointHealth>,
+        val probes: List<ProbeRecord>,
+    )
+
+    private fun buildState(probe: ProbeResult, image: ImagePoolResult): EndpointState {
         val now = System.currentTimeMillis()
         val previous = currentState()
         val previousByUrl = previous.api.associateBy { it.url }
@@ -446,9 +495,12 @@ class ApiClient(
             probedAt = now,
             apiVersion = probe.snapshot.version,
             api = api,
-            image = image,
+            image = image.pool,
             chosenApi = probe.snapshot.baseUrl,
-            chosenImage = image.firstOrNull()?.url ?: probe.snapshot.imageHost,
+            chosenImage = image.pool.firstOrNull()?.url ?: probe.snapshot.imageHost,
+            apiProbes =
+                probe.probes.map { ProbeRecord(it.baseUrl, it.status, it.latencyMs, it.httpStatus, it.reason) },
+            imageProbes = image.probes,
         )
     }
 
@@ -546,6 +598,9 @@ class ApiClient(
 
     private companion object {
         const val REQUEST_TIMEOUT_MS = 20_000L
+        const val FAILOVER_ATTEMPT_TIMEOUT_MS = 10_000L
+        const val FAILOVER_BUDGET_MS = 30_000L
+        const val MIN_ATTEMPT_MS = 1_000L
         const val IMAGE_REFRESH_THROTTLE_MS = 30_000L
         const val POOL_TTL_MS = 30 * 60 * 1000L
         const val POOL_RETRY_MS = 60 * 1000L

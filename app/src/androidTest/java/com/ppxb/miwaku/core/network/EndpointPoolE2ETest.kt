@@ -170,6 +170,47 @@ class EndpointPoolE2ETest {
         assertEquals("https://img-new.net", store.value?.chosenImage)
     }
 
+    @Test
+    fun adoptingTheServingBaseKeepsItsProbedLatency() = runBlocking {
+        val store =
+            FakeStateStore(
+                EndpointState(
+                    probedAt = System.currentTimeMillis(),
+                    apiVersion = "2.1.12",
+                    api =
+                        listOf(
+                            EndpointHealth("https://a.net", latencyMs = 120),
+                            EndpointHealth("https://b.net", latencyMs = 340),
+                        ),
+                    image = listOf(EndpointHealth("https://img-a.net")),
+                    chosenApi = "https://a.net",
+                    chosenImage = "https://img-a.net",
+                ),
+            )
+        val client =
+            ApiClient(
+                interceptorClient { request ->
+                    when (request.url.host) {
+                        "a.net" -> throw IOException("down")
+                        "b.net" ->
+                            response(
+                                request,
+                                200,
+                                """{"code":200,"data":"${encryptPayload("""{"ok":true}""", tsOf(request))}"}""",
+                            )
+                        else -> response(request, 503, "{}")
+                    }
+                },
+                store,
+            )
+
+        client.getJson("/album")
+
+        assertEquals("https://b.net", store.value?.chosenApi)
+        assertEquals(340L, store.value?.api.orEmpty().first().latencyMs)
+        assertEquals(0, store.value?.api.orEmpty().first().failures)
+    }
+
     private fun interceptorClient(handler: (Request) -> Response): OkHttpClient =
         OkHttpClient.Builder()
             .addInterceptor { chain -> handler(chain.request()) }

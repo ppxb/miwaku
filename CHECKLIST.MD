@@ -199,7 +199,7 @@
 ### P2（功能与体验）
 
 - [ ] B5 图片并发可配置（1–5），与下载并发解耦
-- [ ] B6 设置页展示端点列表 / 延迟 / 状态，支持锁定
+- [ ] B6 设置页展示端点列表 / 延迟 / 状态，支持锁定（列表 / 延迟 / 状态已完成，锁定待做）
 - [ ] B7 WorkManager 兜底「进程被杀后重试」
 - [ ] 搜索分页与排序（API `page`/`o`）
 - [ ] 最新 / 每周更新入口（`latest()`、`/serialization`）
@@ -239,9 +239,14 @@
 | 图床探测超时 | `DomainResolver.IMAGE_PROBE_TIMEOUT_MS` | 4s → 5s（与插件一致）：占位图探测的 `dead` 会直接出池，冷启动实测 1.0–2.0s，4s 余量偏薄；真机 4 台两轮全 200 |
 | 请求头收敛 | `RequestHeaders` | token/tokenparam/UA/accept 只在这一处构造；`ApiClient`、`DomainResolver`、`PageImageStore` 三处调用点改用它 |
 | UA 持久随机 | `UserAgent`、`UserAgentStore` | 首启随机 seed → Android 10–15 / Chrome 114–125 / 4 个 Build 之一 + 9 位 deviceId，seed 与 UA 持久化；真机生成值已验：`Android 12; l9c1kcynv`，两条线路 `/setting` 200 |
-| 测试 | `CodecHostListTest`、`EndpointHealthTest`、`EndpointStateTest`、`EndpointJsonTest`、`EndpointPoolE2ETest`、`ApiFailureTest`、`UserAgentTest`、`RequestHeadersTest` | JVM 33 例 + 设备 33 例全绿 |
+| 图床失败不阻塞 | `ApiClient.nextImageHost` | 不再同步探完整池：立即返回池内下一台 / 冷却项 / 静态兜底，刷新转后台（30s 节流）；`ImageFailoverTest` 钉住 <1s 返回 |
+| 切换总预算 | `ApiClient.getJson` | 单请求 30s 总预算：首个候选 20s、后续 10s，均按剩余预算裁剪；预算耗尽不再触发重探。真机 5 个黑洞候选 30.0s 收敛（原为 20s × 候选数） |
+| 端点状态页 | `SettingsScreen`、`AppGraph.endpointSummary` | 设置-调试新增「端点状态」：当前线路 / 协议版本 / 上次探测 + 逐条延迟与状态。状态合并两层：运行期优先（冷却 Ns / 降权 ×n），否则显示探测结果（正常 / 探测降级 / **探测失败，灰色列出**），当前线路标「当前」 |
+| 探测记录 v3 | `EndpointState`、`EndpointStateStore` | schema 2 → 3：持久化 `apiProbes` / `imageProbes`（含 dead 与 reason），v2 文档读入时探测数组为空、其余字段照旧；`EndpointStateStoreTest` 覆盖往返与 v2 兼容 |
+| 采纳保留延迟 | `ApiClient.adoptBase` | 切到实际服务线路时复用原条目，不再把 `latencyMs` 重置为 0；`EndpointPoolE2ETest` 新增 1 例 |
+| 测试 | `CodecHostListTest`、`EndpointHealthTest`、`EndpointStateTest`、`EndpointJsonTest`、`EndpointPoolE2ETest`、`ApiFailureTest`、`UserAgentTest`、`RequestHeadersTest`、`ImageFailoverTest`、`EndpointStateStoreTest` | JVM 34 例 + 设备 36 例全绿（33 基线 + 新增 E2E 1 + Store 2） |
 
-验证：`:app:lintDebug`、`:app:testDebugUnitTest`、`:core:network:testDebugUnitTest`、`:core:database:testDebugUnitTest` 全部通过；设备侧 `TEST-SM-A5360.xml` 记录 33/33 通过（AGP 任务本身仍报 exit code 1，见下）。兜底二级探测与图床静态兜底改动后各重跑一次 `:core:network:testDebugUnitTest`，编译 + 单测均通过；探测传输拆分后 `:core:network:testDebugUnitTest`、`:app:compileDebugAndroidTestKotlin` 通过，模拟器 `emulator-5554` 上 `EndpointPoolE2ETest` 3/3 通过；403 归类改动后 `:core:network:testDebugUnitTest` 25 例全绿（含新增 `ApiFailureTest` 4 例）；图床探测超时改 5s 后真机测 4 台 × 2 轮全 200 且均 < 5s；请求头收敛 + UA 持久随机后 `:core:network:testDebugUnitTest` 33 例全绿，真机 `UserAgentDeviceTest` 通过（UA 跨实例稳定、`cdnhjk`/`cdnutc` 的 `/setting` 均 200）。
+验证：`:app:lintDebug`、`:app:testDebugUnitTest`、`:core:network:testDebugUnitTest`、`:core:database:testDebugUnitTest` 全部通过；设备侧 `TEST-SM-A5360.xml` 记录 33/33 通过（AGP 任务本身仍报 exit code 1，见下）。兜底二级探测与图床静态兜底改动后各重跑一次 `:core:network:testDebugUnitTest`，编译 + 单测均通过；探测传输拆分后 `:core:network:testDebugUnitTest`、`:app:compileDebugAndroidTestKotlin` 通过，模拟器 `emulator-5554` 上 `EndpointPoolE2ETest` 3/3 通过；403 归类改动后 `:core:network:testDebugUnitTest` 25 例全绿（含新增 `ApiFailureTest` 4 例）；图床探测超时改 5s 后真机测 4 台 × 2 轮全 200 且均 < 5s；请求头收敛 + UA 持久随机后 `:core:network:testDebugUnitTest` 33 例全绿，真机 `UserAgentDeviceTest` 通过（UA 跨实例稳定、`cdnhjk`/`cdnutc` 的 `/setting` 均 200）；图床非阻塞 + 30s 预算 + 端点状态页后 `:core:network:testDebugUnitTest` 34 例全绿、设备 `EndpointPoolE2ETest` 4/4 通过、`FailoverBudgetDeviceTest` 实测 30.0s 收敛（临时用例已回收），模拟器上端点状态页实测有数据（当前线路 1179 ms、3 条线路、2 台图床）；探测记录 v3 后 `EndpointStateStoreTest` 2/2、`EndpointPoolE2ETest` 4/4、`EndpointJsonTest` 2/2 通过，模拟器实测 4 条线路全列出、`cdnhjk.net` 灰色「探测失败」、`cdngwc.club` 显示「探测降级 · 当前」、`cdngwc.net` 显示运行期「降权 ×1」。
 
 ### 域名来源实测（2026-10-30，直连 4 轮 + 系统代理 2 轮）
 

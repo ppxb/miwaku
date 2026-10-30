@@ -18,9 +18,12 @@ interface EndpointStateStore {
  * Writes are cheap by construction: [EndpointState] only changes on probe results, failover and
  * penalty events, never per successful request.
  */
-class SharedEndpointStateStore(context: Context) : EndpointStateStore {
+class SharedEndpointStateStore(
+    context: Context,
+    prefsName: String = PREFS_NAME,
+) : EndpointStateStore {
     private val prefs by lazy {
-        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        context.applicationContext.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
     }
     private val context = context.applicationContext
 
@@ -77,6 +80,22 @@ class SharedEndpointStateStore(context: Context) : EndpointStateStore {
             .put(KEY_IMAGE, encodePool(state.image))
             .put(KEY_CHOSEN_API, state.chosenApi.orEmpty())
             .put(KEY_CHOSEN_IMAGE, state.chosenImage.orEmpty())
+            .put(KEY_API_PROBES, encodeProbes(state.apiProbes))
+            .put(KEY_IMAGE_PROBES, encodeProbes(state.imageProbes))
+
+    private fun encodeProbes(records: List<ProbeRecord>): JSONArray =
+        JSONArray().apply {
+            records.forEach { record ->
+                put(
+                    JSONObject()
+                        .put(KEY_URL, record.url)
+                        .put(KEY_STATUS, record.status.name)
+                        .put(KEY_LATENCY, record.latencyMs)
+                        .put(KEY_HTTP_STATUS, record.httpStatus ?: -1)
+                        .put(KEY_REASON, record.reason.orEmpty()),
+                )
+            }
+        }
 
     private fun encodePool(pool: List<EndpointHealth>): JSONArray =
         JSONArray().apply {
@@ -101,7 +120,31 @@ class SharedEndpointStateStore(context: Context) : EndpointStateStore {
             image = parsePool(json.optJSONArray(KEY_IMAGE)),
             chosenApi = json.optString(KEY_CHOSEN_API).takeIf { it.isNotBlank() },
             chosenImage = json.optString(KEY_CHOSEN_IMAGE).takeIf { it.isNotBlank() },
+            apiProbes = parseProbes(json.optJSONArray(KEY_API_PROBES)),
+            imageProbes = parseProbes(json.optJSONArray(KEY_IMAGE_PROBES)),
         )
+
+    /** A v2 document has no probe arrays; an empty list simply means "nothing to explain yet". */
+    private fun parseProbes(array: JSONArray?): List<ProbeRecord> {
+        if (array == null) return emptyList()
+        return buildList {
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                val url = item.optString(KEY_URL).trim().trimEnd('/')
+                if (url.isEmpty()) continue
+                add(
+                    ProbeRecord(
+                        url = url,
+                        status = EndpointStatus.entries.firstOrNull { it.name == item.optString(KEY_STATUS) }
+                            ?: EndpointStatus.Dead,
+                        latencyMs = item.optLong(KEY_LATENCY, 0L),
+                        httpStatus = item.optInt(KEY_HTTP_STATUS, -1).takeIf { it > 0 },
+                        reason = item.optString(KEY_REASON).takeIf { it.isNotBlank() },
+                    ),
+                )
+            }
+        }
+    }
 
     private fun parsePool(array: JSONArray?): List<EndpointHealth> {
         if (array == null) return emptyList()
@@ -138,6 +181,11 @@ class SharedEndpointStateStore(context: Context) : EndpointStateStore {
         const val KEY_COOLDOWN_UNTIL = "cooldownUntil"
         const val KEY_LATENCY = "latencyMs"
         const val KEY_LAST_SUCCESS_AT = "lastSuccessAt"
+        const val KEY_API_PROBES = "apiProbes"
+        const val KEY_IMAGE_PROBES = "imageProbes"
+        const val KEY_STATUS = "status"
+        const val KEY_HTTP_STATUS = "httpStatus"
+        const val KEY_REASON = "reason"
 
         const val LEGACY_POOL = "endpoint_pool"
         const val LEGACY_POOL_BASES = "ordered_bases"
