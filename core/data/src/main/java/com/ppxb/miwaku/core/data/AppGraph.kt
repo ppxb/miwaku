@@ -72,8 +72,20 @@ object AppGraph {
             .build()
     }
 
+    /**
+     * Probe transport: same cookies and timeouts as the API client, but without the business rate
+     * limiter, retry layer or metrics. A probe that waits in a 3/s queue would otherwise report its
+     * own queueing delay as endpoint latency, and with enough candidates starve the 6s call timeout.
+     */
+    private val probeHttpClient by lazy {
+        baseHttpClient
+            .newBuilder()
+            .readTimeout(15, TimeUnit.SECONDS)
+            .build()
+    }
+
     private val endpointStateStore by lazy { SharedEndpointStateStore(appContext) }
-    private val apiClient by lazy { ApiClient(apiHttpClient, endpointStateStore) }
+    private val apiClient by lazy { ApiClient(apiHttpClient, endpointStateStore, probeHttpClient) }
     val downloadStore by lazy { DownloadStore(appContext, library) }
     val pageStore by lazy {
         PageImageStore(

@@ -43,9 +43,15 @@ data class ApiPayload(
 class ApiClient(
     private val httpClient: OkHttpClient = OkHttpClient(),
     private val stateStore: EndpointStateStore? = null,
+    /**
+     * Client used for health probes. It must not share the business rate limiter or retry layer,
+     * otherwise a queued probe reports its own queueing delay as endpoint latency and can starve
+     * its 6s call timeout, which would mark a healthy endpoint dead.
+     */
+    probeHttpClient: OkHttpClient = httpClient,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val domainResolver = DomainResolver(httpClient)
+    private val domainResolver = DomainResolver(probeHttpClient)
     private val settingLock = Mutex()
     private val poolRefreshLock = Mutex()
     private val imageRefreshLock = Mutex()
