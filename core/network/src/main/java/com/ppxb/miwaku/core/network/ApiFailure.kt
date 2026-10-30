@@ -29,6 +29,18 @@ sealed class ApiFailure(message: String, cause: Throwable? = null) : Exception(m
             }
 
     /**
+     * Whether the failure looks like a WAF/interstitial page rather than a slow link. Such failures
+     * cool down harder than a plain timeout, because the host is answering but not with our API.
+     */
+    val isSuspicious: Boolean
+        get() =
+            when (this) {
+                is Decode -> true
+                is Http -> code == 403
+                is Network, is Business -> false
+            }
+
+    /**
      * Whether an image can be re-requested from the alternate image host. A 404/410 means the
      * page itself is gone and must not rotate the host.
      */

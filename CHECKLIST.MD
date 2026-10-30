@@ -30,7 +30,7 @@
 | 域名来源 | Bytepluses 3 源（c01/c02/c03）并发竞速，首个成功即取消 | 无（在扩展内） | 无（在插件内） | 2 源 + AES 解密；实现是 `allSettled`（等最慢源），与注释「先到先用」不符 | 同插件 |
 | 兜底域名 | 5 个内置，首轮不参与；全灭才补一轮探测，运行期作为最后候选 | — | — | 1 个（`cdnhjk.net`），仅发布列表为空时用 | — |
 | 探测 | 6 并发（独立 client，不共享业务 3/s 限速与重试），6s 超时，排序 ok→degraded | — | — | 6 并发、5s 超时、三态；走宿主 axios，无限速无重试 | 6 并发，无 degraded |
-| 剔除策略 | Dead 出池；失败与 `Decode` 只降权 + 指数冷却（30s / 2min 起，上限 10min） | — | — | degraded 只降权，不出池 | `report_failure` 计数 + 冷却 |
+| 剔除策略 | Dead 出池；失败 / `Decode` / 403 只降权 + 指数冷却（瞬断 30s、可疑 2min 起，上限 10min），成功清零 | — | — | 探测期 degraded 留池；运行期网络错误即**永久移出缓存池**（无冷却），池剩 1 条不再切换，30min TTL 后重算 | `report_failure` 计数 + 冷却 |
 | 刷新 | 30min TTL + 失败强制刷新 | — | — | 30min 被动 TTL | 2h 定时 + 手动锁定 |
 | 图床 | 池 + 占位图探测，`nextImageHost` 轮换；池空/占位图全灭时落静态兜底 `cdn-msp3.jmdanjonproxy.vip` | — | — | 图床池 + 占位图 `/users/nopic-.gif` 探测 + 静态兜底 `JM_FALLBACK_IMAGE_BASE` | 同插件 |
 | 拦截器 | 重试 + 限速（3/s）+ 指标 | DoH + Cloudflare WebView + 限速 | — | 无（宿主负责） | — |
@@ -235,9 +235,10 @@
 | 兜底二级探测 | `ApiClient.probeCandidates` | 首轮只探「发布列表 + 持久池」，全灭才补 5 个兜底；列表外且最慢的 `cdngwc.cc` 不再拖冷启动探测尾部 |
 | 图床静态兜底 | `ApiConfig.FALLBACK_IMAGE_BASES`、`ApiClient` | 占位图探测全灭时把 `cdn-msp3.jmdanjonproxy.vip`（插件同源）写进池，`nextImageHost` 在池内无候选时回退到它；实测 200 / 1.0–1.3s |
 | 探测专用传输 | `ApiClient`、`AppGraph.probeHttpClient` | 探测不再经过 `RateLimitInterceptor(3/s)`/`RetryInterceptor`：延迟不含排队、`dead` 只反映网络；真机 6 探针 369ms（独立）vs 1497ms（限速），差 1128ms |
-| 测试 | `CodecHostListTest`、`EndpointHealthTest`、`EndpointStateTest`、`EndpointJsonTest`、`EndpointPoolE2ETest` | JVM 19 例 + 设备 33 例全绿 |
+| 403 归可疑 | `ApiFailure.isSuspicious`、`ApiClient.penalize` | 403 与 `Decode` 同档（2min 起冷却），5xx/超时仍 30s 起；`ApiFailureTest` 4 例覆盖 |
+| 测试 | `CodecHostListTest`、`EndpointHealthTest`、`EndpointStateTest`、`EndpointJsonTest`、`EndpointPoolE2ETest`、`ApiFailureTest` | JVM 25 例 + 设备 33 例全绿 |
 
-验证：`:app:lintDebug`、`:app:testDebugUnitTest`、`:core:network:testDebugUnitTest`、`:core:database:testDebugUnitTest` 全部通过；设备侧 `TEST-SM-A5360.xml` 记录 33/33 通过（AGP 任务本身仍报 exit code 1，见下）。兜底二级探测与图床静态兜底改动后各重跑一次 `:core:network:testDebugUnitTest`，编译 + 单测均通过；探测传输拆分后 `:core:network:testDebugUnitTest`、`:app:compileDebugAndroidTestKotlin` 通过，模拟器 `emulator-5554` 上 `EndpointPoolE2ETest` 3/3 通过。
+验证：`:app:lintDebug`、`:app:testDebugUnitTest`、`:core:network:testDebugUnitTest`、`:core:database:testDebugUnitTest` 全部通过；设备侧 `TEST-SM-A5360.xml` 记录 33/33 通过（AGP 任务本身仍报 exit code 1，见下）。兜底二级探测与图床静态兜底改动后各重跑一次 `:core:network:testDebugUnitTest`，编译 + 单测均通过；探测传输拆分后 `:core:network:testDebugUnitTest`、`:app:compileDebugAndroidTestKotlin` 通过，模拟器 `emulator-5554` 上 `EndpointPoolE2ETest` 3/3 通过；403 归类改动后 `:core:network:testDebugUnitTest` 25 例全绿（含新增 `ApiFailureTest` 4 例）。
 
 ### 域名来源实测（2026-10-30，直连 4 轮 + 系统代理 2 轮）
 

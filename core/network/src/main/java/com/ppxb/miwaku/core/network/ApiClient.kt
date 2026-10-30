@@ -264,7 +264,7 @@ class ApiClient(
     private fun penalize(base: String, failure: ApiFailure) {
         val normalized = base.trim().trimEnd('/')
         val now = System.currentTimeMillis()
-        val suspicious = failure is ApiFailure.Decode
+        val suspicious = failure.isSuspicious
         updateState { current ->
             val existing = current.api.firstOrNull { it.url == normalized } ?: EndpointHealth(normalized)
             val punished = existing.punished(now, suspicious)
