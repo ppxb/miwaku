@@ -291,7 +291,7 @@ class ApiClient(
 
     private suspend fun loadSetting(): SettingSnapshot {
         val started = elapsedMs()
-        val probe = domainResolver.probeSetting(resolveCandidates())
+        val probe = probeCandidates()
         val next = buildState(probe, probeImagePool(probe))
         updateState { next }
         nextPoolRefreshAt = System.currentTimeMillis() + POOL_TTL_MS
@@ -305,9 +305,8 @@ class ApiClient(
     }
 
     /**
-     * Resolves the remote domain list and combines it with the persisted pool and compile-time
-     * fallbacks. Remote entries come first so a stale cached base cannot starve a newly published
-     * one during probing.
+     * Resolves the remote domain list and combines it with the persisted pool. Remote entries come
+     * first so a stale cached base cannot starve a newly published one during probing.
      */
     private suspend fun resolveCandidates(): List<String> {
         val remote =
@@ -319,10 +318,28 @@ class ApiClient(
                 emptyList()
             }
         val pool = currentState().api.map { it.url }
-        return (remote + pool + ApiConfig.API_BASES)
+        return (remote + pool)
             .map { it.trim().trimEnd('/') }
             .filter { it.isNotEmpty() }
             .distinct()
+    }
+
+    /**
+     * Probes published + persisted bases first; the compile-time fallbacks cost one extra round
+     * only when nothing usable answered, so they never extend the normal cold-start probe tail.
+     */
+    private suspend fun probeCandidates(): ProbeResult {
+        val candidates = resolveCandidates()
+        return try {
+            domainResolver.probeSetting(candidates)
+        } catch (e: ApiFailure) {
+            val extended = (candidates + ApiConfig.API_BASES).distinct()
+            // When every config source failed, [resolveCandidateDomains] already returned the
+            // fallbacks; probing them again would only burn another timeout.
+            if (extended.size == candidates.size) throw e
+            perf { "probe_fallback_bases added=${extended.size - candidates.size}" }
+            domainResolver.probeSetting(extended)
+        }
     }
 
     /**
@@ -346,7 +363,7 @@ class ApiClient(
             }
             if (!force && System.currentTimeMillis() < nextPoolRefreshAt) return@withLock false
             try {
-                val probe = domainResolver.probeSetting(resolveCandidates())
+                val probe = probeCandidates()
                 val next = buildState(probe, probeImagePool(probe))
                 updateState { next }
                 nextPoolRefreshAt = System.currentTimeMillis() + POOL_TTL_MS
