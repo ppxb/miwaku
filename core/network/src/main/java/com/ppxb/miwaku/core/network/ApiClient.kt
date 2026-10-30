@@ -105,7 +105,8 @@ class ApiClient(
     /**
      * Returns an image host other than [failedHost], penalising the host that just failed.
      * The pool is re-probed at most once per [IMAGE_REFRESH_THROTTLE_MS]; a slow probe never
-     * blocks the caller, which falls back to the least-failed remaining host.
+     * blocks the caller, which falls back to the least-failed remaining host and finally to the
+     * compile-time fallback CDN.
      */
     suspend fun nextImageHost(failedHost: String?): String? {
         val excluded = failedHost?.trim()?.trimEnd('/')
@@ -126,6 +127,7 @@ class ApiClient(
             pickImage(excluded)?.let { return it }
         }
         return currentState().image.firstOrNull { it.url != excluded }?.url
+            ?: ApiConfig.FALLBACK_IMAGE_BASES.firstOrNull { it != excluded }
     }
 
     /**
@@ -409,8 +411,9 @@ class ApiClient(
             }
 
         if (probed.isNotEmpty()) return probed.take(EndpointState.MAX_IMAGE_POOL)
-        // Every placeholder probe failed: keep the winner's host as a last resort.
-        return listOf(previousByHost[probe.snapshot.imageHost] ?: EndpointHealth(probe.snapshot.imageHost))
+        // Every placeholder probe failed: the reference fallback CDN is the last resort, exactly as
+        // the plugin treats JM_FALLBACK_IMAGE_BASE when its own image pool comes back empty.
+        return listOf(EndpointHealth(ApiConfig.FALLBACK_IMAGE_BASES.first()))
     }
 
     private fun buildState(probe: ProbeResult, image: List<EndpointHealth>): EndpointState {

@@ -28,11 +28,11 @@
 | | miwaku | komikku | Breeze | JM 插件 | jm-boom |
 |---|---|---|---|---|---|
 | 域名来源 | Bytepluses 3 源（c01/c02/c03）并发竞速，首个成功即取消 | 无（在扩展内） | 无（在插件内） | 2 源 + AES 解密；实现是 `allSettled`（等最慢源），与注释「先到先用」不符 | 同插件 |
-| 兜底域名 | 5 个内置，首轮不参与，全灭才补一轮探测 | — | — | 1 个（`cdnhjk.net`），仅发布列表为空时用 | — |
+| 兜底域名 | 5 个内置，首轮不参与；全灭才补一轮探测，运行期作为最后候选 | — | — | 1 个（`cdnhjk.net`），仅发布列表为空时用 | — |
 | 探测 | 6 并发打 `/setting`，6s 超时，排序 ok→degraded | — | — | 6 并发、三态：ok / degraded / dead | 6 并发，无 degraded |
 | 剔除策略 | Dead 出池；失败与 `Decode` 只降权 + 指数冷却（30s / 2min 起，上限 10min） | — | — | degraded 只降权，不出池 | `report_failure` 计数 + 冷却 |
 | 刷新 | 30min TTL + 失败强制刷新 | — | — | 30min 被动 TTL | 2h 定时 + 手动锁定 |
-| 图床 | 池 + 占位图探测，`nextImageHost` 轮换 | — | — | 图床池 + 占位图 `/users/nopic-.gif` 探测 | 同插件 |
+| 图床 | 池 + 占位图探测，`nextImageHost` 轮换；池空/占位图全灭时落静态兜底 `cdn-msp3.jmdanjonproxy.vip` | — | — | 图床池 + 占位图 `/users/nopic-.gif` 探测 + 静态兜底 `JM_FALLBACK_IMAGE_BASE` | 同插件 |
 | 拦截器 | 重试 + 限速（3/s）+ 指标 | DoH + Cloudflare WebView + 限速 | — | 无（宿主负责） | — |
 | UA | 固定常量 | 可配 | — | 随机机型 + 持久 deviceId | — |
 
@@ -233,9 +233,10 @@
 | 图床池 | `DomainResolver.probeImageHosts` | 汇总各可用线路的 `img_host`，用占位图探测；2xx 且非空=ok，其它响应=degraded，超时=dead |
 | JSON 解析 | `Codec.parseHostList`、`DomainResolver` | 配置源与 `/setting` 信封都改走 `org.json`，正则仅作 CDN 前缀兜底 |
 | 兜底二级探测 | `ApiClient.probeCandidates` | 首轮只探「发布列表 + 持久池」，全灭才补 5 个兜底；列表外且最慢的 `cdngwc.cc` 不再拖冷启动探测尾部 |
+| 图床静态兜底 | `ApiConfig.FALLBACK_IMAGE_BASES`、`ApiClient` | 占位图探测全灭时把 `cdn-msp3.jmdanjonproxy.vip`（插件同源）写进池，`nextImageHost` 在池内无候选时回退到它；实测 200 / 1.0–1.3s |
 | 测试 | `CodecHostListTest`、`EndpointHealthTest`、`EndpointStateTest`、`EndpointJsonTest`、`EndpointPoolE2ETest` | JVM 19 例 + 设备 33 例全绿 |
 
-验证：`:app:lintDebug`、`:app:testDebugUnitTest`、`:core:network:testDebugUnitTest`、`:core:database:testDebugUnitTest` 全部通过；设备侧 `TEST-SM-A5360.xml` 记录 33/33 通过（AGP 任务本身仍报 exit code 1，见下）。兜底二级探测改动后重跑 `:core:network:testDebugUnitTest`，编译 + 单测通过。
+验证：`:app:lintDebug`、`:app:testDebugUnitTest`、`:core:network:testDebugUnitTest`、`:core:database:testDebugUnitTest` 全部通过；设备侧 `TEST-SM-A5360.xml` 记录 33/33 通过（AGP 任务本身仍报 exit code 1，见下）。兜底二级探测与图床静态兜底改动后各重跑一次 `:core:network:testDebugUnitTest`，编译 + 单测均通过。
 
 ### 域名来源实测（2026-10-30，直连 4 轮 + 系统代理 2 轮）
 
@@ -243,6 +244,7 @@
 - 到达耗时：c03 260–319ms（6/6 轮第一个到）、c02 1.34–2.36s、c01 4.6–9.3s。
 - 冷启动（取源 + 全候选探测）：我们 4.54s（直连均值）/ 3.35s（代理）；插件 `allSettled` 语义 9.85s / 7.48s，按插件 5s 超时折算仍 ≈8.4s。
 - 5 个候选 `/setting` 全部 ok：`cdngwc.club` 1.3–3.2s、`cdnutc.cc` 1.6–2.8s、`cdnhjk.net` 1.9–2.9s、`cdngwc.net` 1.9–3.2s、`cdngwc.cc` 2.6–5.4s（最慢，从未测速夺冠）。
+- 图床兜底 `cdn-msp3.jmdanjonproxy.vip` 实测 200：占位图 1.0s/3684B，封面 1.25s。
 - 结论：源清单/密钥/算法/文档结构已与插件对齐；并发策略是有意偏离（更快）；兜底语义已向插件靠拢（默认不参与，失败才用）。
 
 已知工具问题：`:app:connectedDebugAndroidTest` 在结果 XML 全绿时仍返回失败（本机 AGP 9.4.1 + 模拟器 SM-A5360 的组合），判定以结果 XML 的 `tests/failures` 为准。

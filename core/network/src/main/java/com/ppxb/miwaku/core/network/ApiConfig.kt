@@ -26,5 +26,8 @@ internal object ApiConfig {
             "https://www.cdngwc.net",
             "https://www.cdngwc.club",
         )
+
+    /** Last-resort image CDN, the same host the reference plugin keeps as JM_FALLBACK_IMAGE_BASE. */
+    val FALLBACK_IMAGE_BASES = listOf("https://cdn-msp3.jmdanjonproxy.vip")
 }
 
