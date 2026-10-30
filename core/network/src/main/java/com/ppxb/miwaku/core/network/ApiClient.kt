@@ -49,9 +49,11 @@ class ApiClient(
      * its 6s call timeout, which would mark a healthy endpoint dead.
      */
     probeHttpClient: OkHttpClient = httpClient,
+    /** Install-specific UA from [UserAgentStore]; the constant is only the fallback. */
+    private val userAgentValue: String = ApiConfig.USER_AGENT,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val domainResolver = DomainResolver(probeHttpClient)
+    private val domainResolver = DomainResolver(probeHttpClient, userAgentValue)
     private val settingLock = Mutex()
     private val poolRefreshLock = Mutex()
     private val imageRefreshLock = Mutex()
@@ -78,7 +80,7 @@ class ApiClient(
     @Volatile
     private var lastImageRefreshAt = 0L
 
-    fun userAgent(): String = ApiConfig.USER_AGENT
+    fun userAgent(): String = userAgentValue
 
     /**
      * Returns the current selection, probing `/setting` at most once for concurrent callers.
@@ -503,10 +505,7 @@ class ApiClient(
         val request =
             Request.Builder()
                 .url(url)
-                .header("token", Codec.token(ts))
-                .header("tokenparam", Codec.tokenParam(ts, version))
-                .header("user-agent", ApiConfig.USER_AGENT)
-                .header("accept", "*/*")
+                .headers(RequestHeaders.api(ts, version, userAgentValue))
                 .build()
         val call = httpClient.newCall(request)
         call.timeout().timeout(callTimeoutMs, TimeUnit.MILLISECONDS)

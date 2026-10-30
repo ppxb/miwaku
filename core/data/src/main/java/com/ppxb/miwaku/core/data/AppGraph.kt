@@ -16,6 +16,7 @@ import com.ppxb.miwaku.core.network.PersistentCookieJar
 import com.ppxb.miwaku.core.network.RateLimitInterceptor
 import com.ppxb.miwaku.core.network.RetryInterceptor
 import com.ppxb.miwaku.core.network.SharedEndpointStateStore
+import com.ppxb.miwaku.core.network.UserAgentStore
 import java.util.concurrent.TimeUnit
 import kotlin.time.Duration.Companion.seconds
 import okhttp3.OkHttpClient
@@ -85,7 +86,8 @@ object AppGraph {
     }
 
     private val endpointStateStore by lazy { SharedEndpointStateStore(appContext) }
-    private val apiClient by lazy { ApiClient(apiHttpClient, endpointStateStore, probeHttpClient) }
+    private val userAgent by lazy { UserAgentStore(appContext).userAgent }
+    private val apiClient by lazy { ApiClient(apiHttpClient, endpointStateStore, probeHttpClient, userAgent) }
     val downloadStore by lazy { DownloadStore(appContext, library) }
     val pageStore by lazy {
         PageImageStore(

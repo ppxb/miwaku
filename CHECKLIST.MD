@@ -33,8 +33,8 @@
 | 剔除策略 | Dead 出池；失败 / `Decode` / 403 只降权 + 指数冷却（瞬断 30s、可疑 2min 起，上限 10min），成功清零 | — | — | 探测期 degraded 留池；运行期网络错误即**永久移出缓存池**（无冷却），池剩 1 条不再切换，30min TTL 后重算 | `report_failure` 计数 + 冷却 |
 | 刷新 | 30min TTL + 失败强制刷新 | — | — | 30min 被动 TTL | 2h 定时 + 手动锁定 |
 | 图床 | 池 = 各线路 `img_host` + 历史池；5s 占位图探测，非 2xx/空 body 留池为 degraded（404 不剔除）；`nextImageHost` 降权轮换，运行期可落兜底 `cdn-msp3.jmdanjonproxy.vip`。实测今天 3 台 | — | — | 池仅取本轮 `img_host`；非 2xx 直接判死、运行期**永久移出**、剩 1 台不再切换；兜底只在 init 池空时用 | 同插件 |
-| 拦截器 | 重试 + 限速（3/s）+ 指标 | DoH + Cloudflare WebView + 限速 | — | 无（宿主负责） | — |
-| UA | 固定常量 | 可配 | — | 随机机型 + 持久 deviceId | — |
+| 拦截器 | 按 client 分工：API = 重试 + 限速（3/s）+ 指标，图片 = 仅重试，探测 = 全无；请求头统一由 `RequestHeaders` 构造 | DoH + Cloudflare WebView + 限速 | — | axios 请求/响应拦截器：注入 token/UA/Host/JWT、统一解码与 401；无重试/限速/指标 | — |
+| UA | 首启随机机型 + 9 位 deviceId（seed 落 SharedPreferences），之后固定；API / 探测 / 图片都带 | 可配 | — | 随机机型 + 持久 deviceId；仅 API 请求带，图片请求只发 Host | — |
 
 **差距**：我们是「能切换」，插件是「知道该切谁、切完还能回来」。但**取源这一环我们更快**：3 源内容同 ETag，最近端起 0.26–0.32s，插件必须等最慢源落地（≈5s 超时）才开始探测。
 
@@ -184,7 +184,7 @@
 - [x] 端点状态合并为一份带 `version` 的文档（API 池 + 图床池 + 选择 + 探测时间，迁移旧 `endpoint_pool`/`api_setting`）
 - [ ] A2 新增 `ApiFailure.Unauthorized`，401/「請先登入會員」单独提示
 - [x] A6 图床池 + 占位图 `/media/users/nopic-.gif` 探测（404 保留为 degraded，不剔除）
-- [ ] A7 UA 随机机型 + 持久 deviceId
+- [x] A7 UA 随机机型 + 持久 deviceId（首启生成 seed，`UserAgentStore` 持久化，三处请求共用）
 - [ ] B2 下载改 worker pool，`recordPage` 批量提交（验收：150 页 ≤ 30 次事务）
 - [ ] B4 下载直写离线目录，取消「复制后删」（验收：同一页磁盘只有一份）
 
@@ -237,9 +237,11 @@
 | 探测专用传输 | `ApiClient`、`AppGraph.probeHttpClient` | 探测不再经过 `RateLimitInterceptor(3/s)`/`RetryInterceptor`：延迟不含排队、`dead` 只反映网络；真机 6 探针 369ms（独立）vs 1497ms（限速），差 1128ms |
 | 403 归可疑 | `ApiFailure.isSuspicious`、`ApiClient.penalize` | 403 与 `Decode` 同档（2min 起冷却），5xx/超时仍 30s 起；`ApiFailureTest` 4 例覆盖 |
 | 图床探测超时 | `DomainResolver.IMAGE_PROBE_TIMEOUT_MS` | 4s → 5s（与插件一致）：占位图探测的 `dead` 会直接出池，冷启动实测 1.0–2.0s，4s 余量偏薄；真机 4 台两轮全 200 |
-| 测试 | `CodecHostListTest`、`EndpointHealthTest`、`EndpointStateTest`、`EndpointJsonTest`、`EndpointPoolE2ETest`、`ApiFailureTest` | JVM 25 例 + 设备 33 例全绿 |
+| 请求头收敛 | `RequestHeaders` | token/tokenparam/UA/accept 只在这一处构造；`ApiClient`、`DomainResolver`、`PageImageStore` 三处调用点改用它 |
+| UA 持久随机 | `UserAgent`、`UserAgentStore` | 首启随机 seed → Android 10–15 / Chrome 114–125 / 4 个 Build 之一 + 9 位 deviceId，seed 与 UA 持久化；真机生成值已验：`Android 12; l9c1kcynv`，两条线路 `/setting` 200 |
+| 测试 | `CodecHostListTest`、`EndpointHealthTest`、`EndpointStateTest`、`EndpointJsonTest`、`EndpointPoolE2ETest`、`ApiFailureTest`、`UserAgentTest`、`RequestHeadersTest` | JVM 33 例 + 设备 33 例全绿 |
 
-验证：`:app:lintDebug`、`:app:testDebugUnitTest`、`:core:network:testDebugUnitTest`、`:core:database:testDebugUnitTest` 全部通过；设备侧 `TEST-SM-A5360.xml` 记录 33/33 通过（AGP 任务本身仍报 exit code 1，见下）。兜底二级探测与图床静态兜底改动后各重跑一次 `:core:network:testDebugUnitTest`，编译 + 单测均通过；探测传输拆分后 `:core:network:testDebugUnitTest`、`:app:compileDebugAndroidTestKotlin` 通过，模拟器 `emulator-5554` 上 `EndpointPoolE2ETest` 3/3 通过；403 归类改动后 `:core:network:testDebugUnitTest` 25 例全绿（含新增 `ApiFailureTest` 4 例）；图床探测超时改 5s 后真机测 4 台 × 2 轮全 200 且均 < 5s。
+验证：`:app:lintDebug`、`:app:testDebugUnitTest`、`:core:network:testDebugUnitTest`、`:core:database:testDebugUnitTest` 全部通过；设备侧 `TEST-SM-A5360.xml` 记录 33/33 通过（AGP 任务本身仍报 exit code 1，见下）。兜底二级探测与图床静态兜底改动后各重跑一次 `:core:network:testDebugUnitTest`，编译 + 单测均通过；探测传输拆分后 `:core:network:testDebugUnitTest`、`:app:compileDebugAndroidTestKotlin` 通过，模拟器 `emulator-5554` 上 `EndpointPoolE2ETest` 3/3 通过；403 归类改动后 `:core:network:testDebugUnitTest` 25 例全绿（含新增 `ApiFailureTest` 4 例）；图床探测超时改 5s 后真机测 4 台 × 2 轮全 200 且均 < 5s；请求头收敛 + UA 持久随机后 `:core:network:testDebugUnitTest` 33 例全绿，真机 `UserAgentDeviceTest` 通过（UA 跨实例稳定、`cdnhjk`/`cdnutc` 的 `/setting` 均 200）。
 
 ### 域名来源实测（2026-10-30，直连 4 轮 + 系统代理 2 轮）
 

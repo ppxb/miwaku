@@ -3,6 +3,7 @@ package com.ppxb.miwaku.core.data.image
 import android.content.Context
 import android.graphics.BitmapFactory
 import com.ppxb.miwaku.core.network.ApiFailure
+import com.ppxb.miwaku.core.network.RequestHeaders
 import com.ppxb.miwaku.core.network.await
 import java.io.File
 import java.io.IOException
@@ -377,8 +378,7 @@ class PageImageStore(
         val request =
             Request.Builder()
                 .url(url)
-                .header("User-Agent", userAgent)
-                .header("Accept", "image/*")
+                .headers(RequestHeaders.image(userAgent))
                 .build()
         val call = httpClient.newCall(request)
         synchronized(flightsLock) {

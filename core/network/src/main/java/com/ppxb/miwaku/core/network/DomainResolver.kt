@@ -56,6 +56,7 @@ data class ImageHostProbe(
  */
 internal class DomainResolver(
     private val httpClient: OkHttpClient,
+    private val userAgent: String = ApiConfig.USER_AGENT,
 ) {
     /**
      * Concurrently queries Bytepluses host config URLs; the first one that successfully decrypts
@@ -159,8 +160,7 @@ internal class DomainResolver(
             val request =
                 Request.Builder()
                     .url(url)
-                    .header("user-agent", ApiConfig.USER_AGENT)
-                    .header("accept", "image/*")
+                    .headers(RequestHeaders.image(userAgent))
                     .build()
             val call = httpClient.newCall(request)
             call.timeout().timeout(timeoutMs, TimeUnit.MILLISECONDS)
@@ -237,7 +237,7 @@ internal class DomainResolver(
         val request =
             Request.Builder()
                 .url(url)
-                .header("user-agent", ApiConfig.USER_AGENT)
+                .headers(RequestHeaders.config(userAgent))
                 .build()
         val call = httpClient.newCall(request)
         call.timeout().timeout(timeoutMs, TimeUnit.MILLISECONDS)
@@ -270,10 +270,7 @@ internal class DomainResolver(
             val request =
                 Request.Builder()
                     .url(url)
-                    .header("token", Codec.token(ts))
-                    .header("tokenparam", Codec.tokenParam(ts, ApiConfig.APP_VERSION))
-                    .header("user-agent", ApiConfig.USER_AGENT)
-                    .header("accept", "*/*")
+                    .headers(RequestHeaders.api(ts, ApiConfig.APP_VERSION, userAgent))
                     .build()
             val call = httpClient.newCall(request)
             call.timeout().timeout(timeoutMs, TimeUnit.MILLISECONDS)
