@@ -5,8 +5,8 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Rect
 import androidx.core.graphics.createBitmap
-import coil.size.Size
-import coil.transform.Transformation
+import coil3.size.Size
+import coil3.transform.Transformation
 import com.ppxb.miwaku.core.data.image.ReaderPerf
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -15,7 +15,7 @@ import kotlin.math.roundToInt
  * Mirrors jm-boom's reader decoder: reorder the original rows, then downscale the result so
  * decoding at full resolution does not leave a full-size copy in memory.
  */
-internal class ScrambleTransformation(private val count: Int) : Transformation {
+internal class ScrambleTransformation(private val count: Int) : Transformation() {
     override val cacheKey: String = "scramble-$count-$MAX_OUTPUT_HEIGHT"
 
     override suspend fun transform(input: Bitmap, size: Size): Bitmap {

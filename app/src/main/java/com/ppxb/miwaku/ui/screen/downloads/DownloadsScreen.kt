@@ -46,6 +46,7 @@ import com.ppxb.miwaku.core.data.download.DownloadState
 import com.ppxb.miwaku.core.data.download.DownloadTask
 import com.ppxb.miwaku.model.ChapterSummary
 import com.ppxb.miwaku.ui.component.EmptyState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @Composable
 fun DownloadsScreen(
@@ -53,8 +54,10 @@ fun DownloadsScreen(
     modifier: Modifier = Modifier,
 ) {
     val manager = AppGraph.downloadManager
-    val tasks by manager.tasks.collectAsState()
-    val waitingForWifi by manager.waitingForWifi.collectAsState()
+    val tasks by manager.tasks.collectAsStateWithLifecycle(initialValue = emptyList())
+    val waitingForWifi by manager.waitingForWifi.collectAsStateWithLifecycle()
+    val paused by manager.isPaused.collectAsStateWithLifecycle()
+    val error by manager.error.collectAsStateWithLifecycle()
     val hasRunning = tasks.any { it.state == DownloadState.Running }
     val hasQueued = tasks.any { it.state == DownloadState.Queued }
     val completedCount = tasks.count { it.state == DownloadState.Completed }
@@ -88,17 +91,22 @@ fun DownloadsScreen(
             }
             if (hasRunning || hasQueued) {
                 TextButton(
-                    onClick = { if (hasRunning) manager.pauseAll() else manager.resumeAll() },
+                    onClick = { if (paused) manager.resumeAll() else manager.pauseAll() },
                 ) {
                     Text(
                         stringResource(
-                            if (hasRunning) R.string.downloads_pause_all else R.string.downloads_resume_all,
+                            if (paused) R.string.downloads_resume_all else R.string.downloads_pause_all,
                         ),
                     )
                 }
             }
         }
 
+        error?.let { message ->
+            Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                Text(message, modifier = Modifier.padding(12.dp), color = MaterialTheme.colorScheme.onErrorContainer)
+            }
+        }
         if (waitingForWifi) {
             Surface(
                 color = MaterialTheme.colorScheme.secondaryContainer,

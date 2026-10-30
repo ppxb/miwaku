@@ -61,6 +61,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
@@ -91,8 +92,9 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
-import coil.compose.AsyncImagePainter
-import coil.compose.rememberAsyncImagePainter
+import coil3.compose.AsyncImagePainter
+import coil3.compose.rememberAsyncImagePainter
+import androidx.compose.ui.platform.testTag
 import com.ppxb.miwaku.R
 import com.ppxb.miwaku.core.data.AppGraph
 import com.ppxb.miwaku.core.data.image.PageImage
@@ -124,10 +126,21 @@ internal fun ReaderScreen(
     modifier: Modifier = Modifier,
     viewModel: ReaderViewModel = viewModel(),
 ) {
-    val state by viewModel.state.collectAsState()
-    val readerBackground by AppGraph.settings.readerBackground.collectAsState()
-    val keepScreenOn by AppGraph.settings.keepScreenOn.collectAsState()
-    val showPageNumber by AppGraph.settings.showPageNumber.collectAsState()
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    val context = LocalContext.current
+    val saveError by viewModel.saveError.collectAsStateWithLifecycle()
+    LaunchedEffect(saveError) { saveError?.let { android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show() } }
+    DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) viewModel.flush()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer); viewModel.flush() }
+    }
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val readerBackground by AppGraph.settings.readerBackground.collectAsStateWithLifecycle()
+    val keepScreenOn by AppGraph.settings.keepScreenOn.collectAsStateWithLifecycle()
+    val showPageNumber by AppGraph.settings.showPageNumber.collectAsStateWithLifecycle()
     val appColorScheme = MaterialTheme.colorScheme
     // Keyed on the app scheme as well: black/paper reuse its non-colour tokens as the base.
     val readerScheme = remember(readerBackground, appColorScheme) {
@@ -136,12 +149,19 @@ internal fun ReaderScreen(
     val readerWindow = (state as? ReaderUiState.Content)?.window
     val activeChapter = readerWindow?.active
     // Detail owns the album name; the chapter payload name drifts per chapter.
-    val albumTitle by viewModel.albumTitle.collectAsState()
+    val albumTitle by viewModel.albumTitle.collectAsStateWithLifecycle()
     val title =
         albumTitle.ifBlank { activeChapter?.title.orEmpty() }.ifBlank {
             stringResource(R.string.reader_title)
         }
-    val listState = rememberLazyListState()
+    val listState = key(readerWindow?.id) {
+        val initial = readerWindow?.takeIf { it.totalPages > 0 }?.let { window ->
+            val page = (window.indexByKey[viewModel.startPageKey] ?: viewModel.startPage)
+                .coerceIn(0, window.totalPages - 1)
+            page + window.locate(page).first
+        } ?: 0
+        rememberLazyListState(initialFirstVisibleItemIndex = initial)
+    }
     val hazeState = rememberHazeState()
     var controlsVisible by rememberSaveable { mutableStateOf(false) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
@@ -170,6 +190,8 @@ internal fun ReaderScreen(
             val window = readerWindow
             if (window == null || window.chapters.isEmpty()) {
                 0
+            } else if (viewModel.startPageKey in window.indexByKey) {
+                window.indexByKey.getValue(checkNotNull(viewModel.startPageKey))
             } else {
                 val first = window.chapters.first()
                 if (viewModel.startPage < 0) {
@@ -184,10 +206,10 @@ internal fun ReaderScreen(
         if (activePageCount == 0) 0 else (readerPage - activeStart).coerceIn(0, activePageCount - 1)
     var pendingJump by remember { mutableStateOf<Int?>(null) }
     val scope = rememberCoroutineScope()
-    val modeOverrides by AppGraph.readerModes.modes.collectAsState()
-    val defaultMode by AppGraph.settings.defaultReadingMode.collectAsState()
+    val modeOverrides by AppGraph.readerModes.modes.collectAsStateWithLifecycle()
+    val defaultMode by AppGraph.settings.defaultReadingMode.collectAsStateWithLifecycle()
     val mode = modeOverrides[viewModel.albumId] ?: defaultMode
-    val chapters by viewModel.chapters.collectAsState()
+    val chapters by viewModel.chapters.collectAsStateWithLifecycle()
     val chapterNames =
         remember(chapters) {
             chapters.associate { it.id to it.name }
@@ -212,6 +234,8 @@ internal fun ReaderScreen(
                         ReaderItem.Transition(
                             from = chapterNames[chapter.chapterId] ?: chapter.title,
                             to = chapterNames[next.chapterId] ?: next.title,
+                            fromId = chapter.chapterId,
+                            toId = next.chapterId,
                             pageIndex = (page - 1).coerceAtLeast(0),
                         )
                 }
@@ -231,10 +255,10 @@ internal fun ReaderScreen(
     // Detail already fills in "第N话" when the source chapter name is empty.
     val chapterName =
         chapters.firstOrNull { it.id == (activeChapter?.chapterId ?: viewModel.chapterId) }?.name.orEmpty()
-    val pageSizes by viewModel.pageSizes.collectAsState()
-    val failedPages by viewModel.failedPages.collectAsState()
-    val nextChapter by viewModel.nextChapter.collectAsState()
-    val previousChapter by viewModel.previousChapter.collectAsState()
+    val pageSizes by viewModel.pageSizes.collectAsStateWithLifecycle()
+    val failedPages by viewModel.failedPages.collectAsStateWithLifecycle()
+    val nextChapter by viewModel.nextChapter.collectAsStateWithLifecycle()
+    val previousChapter by viewModel.previousChapter.collectAsStateWithLifecycle()
     // Explicit jumps replace the window; natural page turns keep appending to it.
     val openNextChapter: () -> Unit = {
         (nextChapter as? NextChapterState.Next)?.chapter?.let { next ->
@@ -262,10 +286,10 @@ internal fun ReaderScreen(
         }
     }
     val fallbackRatio =
-        remember(pageSizes, slices) {
+        remember(pageSizes, activeChapter?.chapterId) {
             val sizes =
-                slices.mapNotNull { slice ->
-                    pageSizes["${slice.chapterId}/${slice.page.fileName.ifBlank { "page-${slice.indexInChapter}" }}"]
+                activeChapter?.pages.orEmpty().take(24).mapIndexedNotNull { index, page ->
+                    pageSizes["${activeChapter?.chapterId}/${page.fileName.ifBlank { "page-$index" }}"]
                 }
             medianPageRatio(sizes)
         }
@@ -298,28 +322,70 @@ internal fun ReaderScreen(
     }
     // Webtoon keeps its own scroll over the window's flat page list.
     val latestItems by rememberUpdatedState(items)
+    val latestItemsByKey by rememberUpdatedState(remember(items) { items.associateBy { it.stableKey } })
     val latestItemOfPage by rememberUpdatedState(itemOfPage)
-    LaunchedEffect(windowId, mode, slices.isEmpty()) {
+    var offsetRestored by remember(windowId) { mutableStateOf(viewModel.startOffsetFraction == 0f) }
+    var positionedWindow by remember { mutableStateOf<Int?>(null) }
+    val latestSizes by rememberUpdatedState(pageSizes)
+    LaunchedEffect(windowId, mode, pageSizes, readerWindow?.revision, positionedWindow) {
+        if (mode != ReadingMode.Webtoon || offsetRestored || readerWindow == null) return@LaunchedEffect
+        if (positionedWindow != windowId) return@LaunchedEffect
+        if (listState.isScrollInProgress) { offsetRestored = true; return@LaunchedEffect }
+        val resumeGlobal = readerWindow.indexByKey[viewModel.startPageKey] ?: return@LaunchedEffect
+        val itemIndex = latestItemOfPage.getOrNull(resumeGlobal) ?: return@LaunchedEffect
+        val page = latestItems.getOrNull(itemIndex) as? ReaderItem.Page ?: return@LaunchedEffect
+        val size = latestSizes[page.slice.chapterId + "/" + page.slice.page.fileName] ?: return@LaunchedEffect
+        val height = imageWidthPx.toFloat() * size.height / size.width
+        listState.requestScrollToItem(itemIndex, (height * viewModel.startOffsetFraction).roundToInt())
+        offsetRestored = true
+    }
+    val latestOffsetRestored by rememberUpdatedState(offsetRestored)
+    LaunchedEffect(windowId, readerWindow?.revision, mode, slices.isEmpty()) {
         if (mode != ReadingMode.Webtoon || windowId == null) return@LaunchedEffect
         if (items.isEmpty()) return@LaunchedEffect
         // Restoring an existing window keeps its inner offset; a fresh window starts at its page.
-        val targetItem = itemOfPage.getOrElse(readerPage) { 0 }
-        if (listState.firstVisibleItemIndex != targetItem) {
-            listState.scrollToItem(targetItem)
+        val anchor = readerWindow?.anchor
+        val anchoredIndex = anchor?.let { saved -> items.indexOfFirst { it.stableKey == saved.key }.takeIf { it >= 0 } }
+        val targetItem = anchoredIndex ?: itemOfPage.getOrElse(readerPage) { 0 }
+        if (positionedWindow != windowId) {
+            listState.requestScrollToItem(targetItem, 0)
+            positionedWindow = windowId
+        } else if (anchor != null && (listState.firstVisibleItemIndex != targetItem || listState.firstVisibleItemScrollOffset != anchor.offset)) {
+            listState.requestScrollToItem(targetItem, anchor.offset)
         }
-        snapshotFlow { listState.firstVisibleItemIndex }
+        val revision = readerWindow?.revision ?: 0
+        snapshotFlow {
+            val info = listState.layoutInfo
+            val visible = info.visibleItemsInfo.filter { it.offset + it.size > info.viewportStartOffset && it.offset < info.viewportEndOffset }
+            val first = visible.firstOrNull { it.key.toString() in latestItemsByKey }
+            val item = first?.let { latestItemsByKey[it.key.toString()] }
+            val firstPage = visible.firstOrNull { latestItemsByKey[it.key.toString()] is ReaderItem.Page }
+            val pageItem = firstPage?.let { latestItemsByKey[it.key.toString()] as? ReaderItem.Page }
+            ReaderViewport(
+                visible.mapNotNull { (latestItemsByKey[it.key.toString()] as? ReaderItem.Page)?.pageIndex },
+                pageItem?.pageIndex ?: -1, item?.stableKey.orEmpty(),
+                if (first == null) 0 else (-first.offset).coerceAtLeast(0),
+                if (firstPage == null || firstPage.size == 0) 0f else (-firstPage.offset).coerceAtLeast(0).toFloat() / firstPage.size,
+                visible.filter { it.offset + it.size <= info.viewportEndOffset }.mapNotNull {
+                    (latestItemsByKey[it.key.toString()] as? ReaderItem.Page)?.pageIndex
+                }.toSet(), listState.isScrollInProgress, latestOffsetRestored || listState.isScrollInProgress,
+            )
+        }
             .distinctUntilChanged()
-            .collect { index ->
-                val page = latestItems.getOrNull(index)?.pageIndex ?: return@collect
-                readerPage = page
-                viewModel.onPageVisible(windowId, page)
+            .collect { report ->
+                if (report.page < 0) return@collect
+                if (report.scrolling) offsetRestored = true
+                readerPage = report.page
+                viewModel.onViewport(windowId, revision, report.visible, report.page, report.key,
+                    report.offset, report.fraction, report.ends, report.scrolling,
+                    report.canRecord)
             }
     }
     // Paged modes consume the jump themselves; this only serves the webtoon list.
     LaunchedEffect(pendingJump, mode) {
         if (mode != ReadingMode.Webtoon) return@LaunchedEffect
         val target = pendingJump ?: return@LaunchedEffect
-        latestItemOfPage.getOrNull(target)?.let { listState.scrollToItem(it) }
+        latestItemOfPage.getOrNull(target)?.let { listState.requestScrollToItem(it) }
         pendingJump = null
     }
     // Windows are replaced on explicit jumps, so one-shot navigation state resets with them.
@@ -374,6 +440,7 @@ internal fun ReaderScreen(
                                     imageWidthPx = imageWidthPx,
                                     onFileOf = viewModel::fileOf,
                                     onRetry = viewModel::retry,
+                                    onDisplayed = { image, success -> viewModel.imageDisplayed(current.window.id, image, success) },
                                     nextChapter = nextChapter,
                                     onRetryNext = viewModel::retryNextChapter,
                                     onOpenNextChapter = openNextChapter,
@@ -417,9 +484,13 @@ internal fun ReaderScreen(
                                     imageWidthPx = imageWidthPx,
                                     onFileOf = viewModel::fileOf,
                                     onRetry = viewModel::retry,
-                                    onPageChanged = { page ->
+                                    onDisplayed = { image, success -> viewModel.imageDisplayed(current.window.id, image, success) },
+                                    revision = current.window.revision,
+                                    anchor = current.window.anchor,
+                                    onViewport = { visible, page, itemKey, scrolling ->
                                         readerPage = page
-                                        viewModel.onPageVisible(current.window.id, page)
+                                        viewModel.onViewport(current.window.id, current.window.revision, visible, page,
+                                            itemKey, 0, 0f, if (scrolling) emptySet() else setOf(page), scrolling, !scrolling)
                                     },
                                     nextChapter = nextChapter,
                                     onRetryNext = viewModel::retryNextChapter,
@@ -745,15 +816,24 @@ internal data class ReaderSlice(
 private sealed interface ReaderItem {
     /** Page index this row belongs to, used for progress and the page counter. */
     val pageIndex: Int
+    val stableKey: String get() = when (this) {
+        is Page -> "p:${slice.chapterId}:${slice.indexInChapter}:${slice.page.fileName.ifBlank { "page-${slice.indexInChapter}" }}"
+        is Transition -> "t:$fromId:$toId"
+    }
 
     data class Page(val slice: ReaderSlice, override val pageIndex: Int) : ReaderItem
 
     data class Transition(
         val from: String,
         val to: String,
+        val fromId: String,
+        val toId: String,
         override val pageIndex: Int,
     ) : ReaderItem
 }
+
+private data class ReaderViewport(val visible: List<Int>, val page: Int, val key: String,
+    val offset: Int, val fraction: Float, val ends: Set<Int>, val scrolling: Boolean, val canRecord: Boolean)
 
 /** Centered "chapter finished / next chapter" divider, like the reference reader. */
 @Composable
@@ -792,6 +872,7 @@ private fun ReaderPages(
     imageWidthPx: Int,
     onFileOf: (PageImage) -> File?,
     onRetry: (PageImage) -> Unit,
+    onDisplayed: (PageImage, Boolean) -> Unit,
     nextChapter: NextChapterState,
     onRetryNext: () -> Unit,
     onOpenNextChapter: () -> Unit,
@@ -800,17 +881,13 @@ private fun ReaderPages(
 ) {
     LazyColumn(
         state = listState,
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth().testTag("reader-pages"),
         contentPadding = PaddingValues(vertical = 4.dp),
     ) {
         itemsIndexed(
             items = items,
             key = { _, item ->
-                when (item) {
-                    is ReaderItem.Page ->
-                        "p:${item.slice.chapterId}:${item.slice.indexInChapter}:${item.slice.page.fileName}"
-                    is ReaderItem.Transition -> "t:${item.from}:${item.to}"
-                }
+                item.stableKey
             },
             contentType = { _, item -> if (item is ReaderItem.Page) "page" else "transition" },
         ) { _, item ->
@@ -837,12 +914,13 @@ private fun ReaderPages(
                         imageWidthPx = imageWidthPx,
                         fileOf = onFileOf,
                         retry = onRetry,
+                        onDisplayed = onDisplayed,
                     )
                 }
                 is ReaderItem.Transition -> ChapterTransitionItem(item.from, item.to)
             }
         }
-        item(key = "reader-footer", contentType = "footer") {
+        item(key = "footer:" + items.lastOrNull()?.stableKey, contentType = "footer") {
             ReaderFooter(
                 state = nextChapter,
                 onRetry = onRetryNext,
@@ -863,6 +941,7 @@ private fun ReaderPageImage(
     imageWidthPx: Int,
     fileOf: (PageImage) -> File?,
     retry: (PageImage) -> Unit,
+    onDisplayed: (PageImage, Boolean) -> Unit,
 ) {
     val ratio =
         if (knownSize != null && knownSize.width > 0 && knownSize.height > 0) {
@@ -880,6 +959,7 @@ private fun ReaderPageImage(
         modifier = Modifier.fillMaxWidth().aspectRatio(ratio),
         fileOf = fileOf,
         retry = retry,
+        onDisplayed = onDisplayed,
     )
 }
 
@@ -894,6 +974,7 @@ private fun ReaderPageArtwork(
     modifier: Modifier,
     fileOf: (PageImage) -> File?,
     retry: (PageImage) -> Unit,
+    onDisplayed: (PageImage, Boolean) -> Unit,
 ) {
     val context = LocalContext.current
     var attempt by remember { mutableIntStateOf(0) }
@@ -905,7 +986,10 @@ private fun ReaderPageArtwork(
             file?.let { PageImageRequests.build(context, image, it, imageWidthPx, attempt) }
         }
     val painter = rememberAsyncImagePainter(model = request)
-    val painterState = painter.state
+    val painterState by painter.state.collectAsStateWithLifecycle()
+    DisposableEffect(image.cacheKey, request) {
+        onDispose { onDisplayed(image, false) }
+    }
     var showSpinner by remember(request) { mutableStateOf(false) }
 
     // The spinner follows the painter state, so it can never outlive a settled page.
@@ -921,15 +1005,17 @@ private fun ReaderPageArtwork(
         when (painterState) {
             is AsyncImagePainter.State.Success -> {
                 decodeFailed = false
+                onDisplayed(image, true)
                 ReaderPerf.log {
                     "page_ready index=$index ms=${ReaderPerf.mark() - pageStarted}"
                 }
             }
             is AsyncImagePainter.State.Error -> {
                 decodeFailed = true
+                onDisplayed(image, false)
                 ReaderPerf.log { "page_decode_failed index=$index" }
             }
-            else -> Unit
+            else -> onDisplayed(image, false)
         }
     }
 
@@ -1128,7 +1214,10 @@ private fun PagedReader(
     imageWidthPx: Int,
     onFileOf: (PageImage) -> File?,
     onRetry: (PageImage) -> Unit,
-    onPageChanged: (Int) -> Unit,
+    onDisplayed: (PageImage, Boolean) -> Unit,
+    revision: Int,
+    anchor: ReaderAnchor?,
+    onViewport: (List<Int>, Int, String, Boolean) -> Unit,
     nextChapter: NextChapterState,
     onRetryNext: () -> Unit,
     onOpenNextChapter: () -> Unit,
@@ -1143,8 +1232,9 @@ private fun PagedReader(
         initialPage = startItem.coerceIn(0, itemCount.coerceAtLeast(0)),
     ) { itemCount + 1 }
     // A restored pager state may point into a window that no longer exists; align it once.
-    LaunchedEffect(state) {
-        if (state.currentPage != startItem) state.scrollToPage(startItem)
+    LaunchedEffect(state, revision) {
+        val target = anchor?.let { saved -> items.indexOfFirst { it.stableKey == saved.key }.takeIf { it >= 0 } } ?: startItem
+        if ((revision == 0 || anchor != null) && state.currentPage != target) state.requestScrollToPage(target)
     }
     val scope = rememberCoroutineScope()
     val rightToLeft = mode == ReadingMode.PagedRightToLeft
@@ -1156,7 +1246,7 @@ private fun PagedReader(
     val latestItemCount by rememberUpdatedState(itemCount)
     // Tap zones mirror the reference reader: thirds turn the page, the middle opens the menu.
     val pagerModifier =
-        modifier.pointerInput(mode) {
+        modifier.testTag("reader-pager").pointerInput(mode) {
             detectTapGestures { offset ->
                 val width = size.width.toFloat()
                 val height = size.height.toFloat()
@@ -1186,19 +1276,27 @@ private fun PagedReader(
             }
         }
 
-    LaunchedEffect(state, items.size) {
-        snapshotFlow { state.currentPage }
+    val latestPageItems by rememberUpdatedState(remember(items) { items.associateBy { it.stableKey } })
+    LaunchedEffect(state, revision, items.size) {
+        snapshotFlow {
+            val visible = state.layoutInfo.visiblePagesInfo
+            val anchorIndex = if (state.isScrollInProgress) state.currentPage else state.settledPage
+            Triple(visible.map { it.key.toString() }, visible.firstOrNull { it.index == anchorIndex }?.key?.toString(),
+                state.isScrollInProgress)
+        }
             .distinctUntilChanged()
-            .collect { index ->
+            .collect { (visible, anchorKey, scrolling) ->
                 // The footer page still belongs to the last page of the window, so it can trigger
                 // the append when the reader reaches the end before the next chapter is loaded.
-                val page = items.getOrNull(index)?.pageIndex ?: items.lastOrNull()?.pageIndex
-                if (page != null) onPageChanged(page)
+                val item = latestPageItems[anchorKey] ?: anchorKey?.takeIf { it.startsWith("footer:") }
+                    ?.removePrefix("footer:")?.let { latestPageItems[it] } ?: return@collect
+                onViewport(visible.mapNotNull { (latestPageItems[it] as? ReaderItem.Page)?.pageIndex },
+                    item.pageIndex, item.stableKey, scrolling)
             }
     }
     LaunchedEffect(state, jumpToItem, items.size) {
         val target = jumpToItem ?: return@LaunchedEffect
-        if (target in 0 until items.size) state.scrollToPage(target)
+        if (target in 0 until items.size) state.requestScrollToPage(target)
         onJumpConsumed()
     }
 
@@ -1213,6 +1311,7 @@ private fun PagedReader(
                         imageWidthPx = imageWidthPx,
                         onFileOf = onFileOf,
                         onRetry = onRetry,
+                        onDisplayed = onDisplayed,
                     )
                 is ReaderItem.Transition ->
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -1232,7 +1331,7 @@ private fun PagedReader(
     }
 
     if (mode == ReadingMode.VerticalPager) {
-        VerticalPager(state = state, modifier = pagerModifier, key = { it }) { index ->
+        VerticalPager(state = state, modifier = pagerModifier, key = { items.getOrNull(it)?.stableKey ?: "footer:${items.lastOrNull()?.stableKey}" }) { index ->
             pageContent(index)
         }
     } else {
@@ -1240,7 +1339,7 @@ private fun PagedReader(
             state = state,
             modifier = pagerModifier,
             reverseLayout = mode == ReadingMode.PagedRightToLeft,
-            key = { it },
+            key = { items.getOrNull(it)?.stableKey ?: "footer:${items.lastOrNull()?.stableKey}" },
         ) { index ->
             pageContent(index)
         }
@@ -1255,6 +1354,7 @@ private fun PagedPage(
     imageWidthPx: Int,
     onFileOf: (PageImage) -> File?,
     onRetry: (PageImage) -> Unit,
+    onDisplayed: (PageImage, Boolean) -> Unit,
 ) {
     val page = slice.page
     val image =
@@ -1277,6 +1377,7 @@ private fun PagedPage(
         modifier = Modifier.fillMaxSize(),
         fileOf = onFileOf,
         retry = onRetry,
+        onDisplayed = onDisplayed,
     )
 }
 

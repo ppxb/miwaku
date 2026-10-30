@@ -21,6 +21,7 @@ android {
     }
 
     buildTypes {
+        debug { applicationIdSuffix = ".debug" }
         release {
             optimization {
                 enable = true
@@ -51,12 +52,17 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.coil.compose)
+    implementation(libs.coil.network)
+    implementation(libs.coil.gif)
+    implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.haze)
     implementation(libs.haze.blur)
     implementation(libs.haze.blur.materials)
     implementation(libs.kotlinx.serialization.core)
     testImplementation(libs.junit)
     androidTestImplementation(project(":core:network"))
+    androidTestImplementation(project(":core:database"))
+    androidTestImplementation(libs.room.ktx)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)

@@ -1,7 +1,5 @@
 package com.ppxb.miwaku.core.data
 
-import com.ppxb.miwaku.core.data.download.DownloadStore
-import com.ppxb.miwaku.core.data.image.ChapterManifestCache
 import com.ppxb.miwaku.core.data.image.ReaderPerf
 import com.ppxb.miwaku.core.network.ApiClient
 import com.ppxb.miwaku.core.network.ApiPayload
@@ -13,17 +11,17 @@ import com.ppxb.miwaku.model.ExploreSection
 import com.ppxb.miwaku.model.ReaderPage
 import com.ppxb.miwaku.model.SearchResult
 import java.io.IOException
-import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
 import org.json.JSONArray
 import org.json.JSONObject
 
 class ComicRepository internal constructor(
     private val api: ApiClient,
-    private val manifests: ChapterManifestCache,
-    private val detailStore: ComicDetailCache,
-    private val downloads: DownloadStore? = null,
+    private val library: LibraryStore,
 ) {
-    private val detailCache = ConcurrentHashMap<String, CachedDetail>()
+    private val chapterLoads = HashMap<String, Deferred<ChapterContent>>()
     suspend fun latest(page: Int = 0): List<ComicSummary> =
         api.getJson("/latest", mapOf("page" to "$page")).toComicList()
 
@@ -79,33 +77,13 @@ class ComicRepository internal constructor(
             )
 
     suspend fun detail(id: String): ComicDetail {
-        val now = System.currentTimeMillis()
-        val cached = detailCache[id]
-        if (cached != null && now - cached.at < DETAIL_TTL_MS) {
-            ReaderPerf.log { "album_cache_hit id=$id" }
-            return cached.detail
-        }
-        detailStore.get(id, DETAIL_TTL_MS)?.let { disk ->
-            detailCache[id] = CachedDetail(now - disk.ageMs, disk.detail)
-            ReaderPerf.log { "album_disk_cache_hit id=$id chapters=${disk.detail.chapters.size}" }
-            return disk.detail
-        }
-        return fetchDetail(id)
+        return library.detail(id)?.first ?: fetchDetail(id)
     }
 
     /** Returns cached content even when it is stale, plus whether it passed the fresh TTL. */
-    fun detailSnapshot(id: String): DetailSnapshot? {
-        val now = System.currentTimeMillis()
-        detailCache[id]?.let { cached ->
-            val age = (now - cached.at).coerceAtLeast(0)
-            if (age <= DETAIL_STALE_TTL_MS) {
-                return DetailSnapshot(cached.detail, age <= DETAIL_TTL_MS)
-            }
-            detailCache.remove(id)
-        }
-        val disk = detailStore.get(id, DETAIL_STALE_TTL_MS) ?: return null
-        detailCache[id] = CachedDetail(now - disk.ageMs, disk.detail)
-        return DetailSnapshot(disk.detail, disk.ageMs <= DETAIL_TTL_MS)
+    suspend fun detailSnapshot(id: String): DetailSnapshot? {
+        val (detail, fetchedAt) = library.detail(id) ?: return null
+        return DetailSnapshot(detail, System.currentTimeMillis() - fetchedAt < DETAIL_TTL_MS)
     }
 
     suspend fun refreshDetail(id: String): ComicDetail = fetchDetail(id)
@@ -133,36 +111,30 @@ class ComicRepository internal constructor(
                 coverUrl = "${payload.imageHost}/media/albums/${resolvedId}_3x4.jpg",
                 chapters = chapters,
             )
-        if (detailCache.size >= MAX_DETAIL_CACHE) {
-            detailCache.clear()
-        }
-        detailCache[id] = CachedDetail(System.currentTimeMillis(), detail)
-        detailStore.put(detail)
+        library.saveDetail(detail)
         ReaderPerf.log { "album_loaded id=$id chapters=${chapters.size} ms=${ReaderPerf.mark() - started}" }
         return detail
     }
 
     suspend fun chapter(albumId: String, chapterId: String): ChapterContent {
-        val started = ReaderPerf.mark()
-        downloads?.manifest(chapterId)?.let { downloaded ->
-            val host = api.imageHost()?.takeIf { it.isNotBlank() } ?: downloaded.imageHost
-            val content = downloaded.toContent(host)
-            ReaderPerf.log {
-                "chapter_download_hit chapter=$chapterId pages=${content.pages.size} ms=${ReaderPerf.mark() - started}"
-            }
-            return content
-        }
-        manifests.get(chapterId)?.let { cached ->
-            val host = api.imageHost() ?: cached.imageHost
-            if (host.isNotBlank()) {
-                val content = cached.toContent(host)
-                ReaderPerf.log {
-                    "manifest_hit chapter=$chapterId pages=${content.pages.size} ms=${ReaderPerf.mark() - started}"
+        library.chapter(chapterId, api.imageHost())?.let { return it }
+        // A small manifest finishes into durable storage even if its first caller navigates away.
+        val load = synchronized(chapterLoads) {
+            chapterLoads[chapterId] ?: library.scope.async(start = CoroutineStart.LAZY) {
+                library.chapter(chapterId, api.imageHost()) ?: fetchChapter(albumId, chapterId)
+            }.also { task ->
+                chapterLoads[chapterId] = task
+                task.invokeOnCompletion {
+                    synchronized(chapterLoads) { if (chapterLoads[chapterId] === task) chapterLoads.remove(chapterId) }
                 }
-                return content
+                task.start()
             }
         }
+        return load.await()
+    }
 
+    private suspend fun fetchChapter(albumId: String, chapterId: String): ChapterContent {
+        val started = ReaderPerf.mark()
         val payload = api.getJson("/chapter", mapOf("id" to chapterId))
         val json = payload.value as? JSONObject ?: throw IOException("unexpected chapter payload")
         val images = json.optJSONArray("images").toStringList()
@@ -195,13 +167,7 @@ class ComicRepository internal constructor(
                 title = json.string("name").unescapeHtml(),
                 pages = pages,
             )
-        manifests.put(
-            chapterId = chapterId,
-            seriesId = seriesId,
-            title = content.title,
-            imageHost = payload.imageHost,
-            pages = pages,
-        )
+        library.saveChapter(content, payload.imageHost)
         ReaderPerf.log {
             "manifest_loaded chapter=$chapterId pages=${pages.size} ms=${ReaderPerf.mark() - started}"
         }
@@ -271,15 +237,8 @@ class ComicRepository internal constructor(
             .replace(Regex("\\s+"), " ")
             .trim()
 
-    private data class CachedDetail(
-        val at: Long,
-        val detail: ComicDetail,
-    )
-
     private companion object {
         const val DETAIL_TTL_MS = 5 * 60 * 1000L
-        const val DETAIL_STALE_TTL_MS = 7 * 24 * 60 * 60 * 1000L
-        const val MAX_DETAIL_CACHE = 16
     }
 }
 

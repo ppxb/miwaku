@@ -28,6 +28,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 
 /**
  * Keeps the download queue alive while Miwaku is backgrounded or the screen is off.
@@ -45,9 +46,18 @@ class DownloadService : Service() {
         NotificationManagerCompat.from(this).cancel(COMPLETION_NOTIFICATION_ID)
         startForegroundCompat(preparingNotification())
 
-        val manager = AppGraph.downloadManager
         val sessionIds = linkedSetOf<String>()
         scope.launch {
+            try {
+                AppGraph.library.awaitReady()
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (_: Exception) {
+                stopForegroundCompat()
+                stopSelf()
+                return@launch
+            }
+            val manager = AppGraph.downloadManager
             combine(
                 manager.tasks,
                 manager.isPaused,
@@ -134,7 +144,15 @@ class DownloadService : Service() {
         if (summary.more != null) {
             builder.setSubText(summary.more)
         }
-        NotificationManagerCompat.from(this).notify(NOTIFICATION_ID, builder.build())
+        postNotification(NOTIFICATION_ID, builder.build())
+    }
+
+    private fun postNotification(id: Int, notification: Notification) {
+        try {
+            NotificationManagerCompat.from(this).notify(id, notification)
+        } catch (_: SecurityException) {
+            // Permission can be revoked after the earlier permission check.
+        }
     }
 
     private fun notifyCompletion(finished: List<DownloadTask>) {
@@ -165,7 +183,7 @@ class DownloadService : Service() {
                 .setOnlyAlertOnce(true)
                 .setCategory(NotificationCompat.CATEGORY_STATUS)
                 .build()
-        NotificationManagerCompat.from(this).notify(COMPLETION_NOTIFICATION_ID, notification)
+        postNotification(COMPLETION_NOTIFICATION_ID, notification)
     }
 
     private fun summarize(active: List<DownloadTask>, waitingForWifi: Boolean): Summary {

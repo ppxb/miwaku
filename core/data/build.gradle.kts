@@ -20,8 +20,11 @@ android {
 
 dependencies {
     api(project(":core:model"))
+    implementation(project(":core:database"))
     implementation(project(":core:network"))
     implementation(libs.androidx.core.ktx)
     api(libs.kotlinx.coroutines.core)
     implementation(libs.okhttp)
+    implementation(libs.room.ktx)
+    testImplementation(libs.junit)
 }

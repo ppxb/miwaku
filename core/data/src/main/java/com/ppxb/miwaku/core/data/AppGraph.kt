@@ -7,7 +7,6 @@ import android.net.NetworkCapabilities
 import com.ppxb.miwaku.core.data.download.DownloadManager
 import com.ppxb.miwaku.core.data.download.DownloadStore
 import com.ppxb.miwaku.core.data.favorites.FavoritesStore
-import com.ppxb.miwaku.core.data.image.ChapterManifestCache
 import com.ppxb.miwaku.core.data.image.PageImageStore
 import com.ppxb.miwaku.core.data.settings.SettingsStore
 import com.ppxb.miwaku.core.network.ApiClient
@@ -39,6 +38,7 @@ object AppGraph {
     }
 
     val settings: SettingsStore by lazy { SettingsStore(appContext) }
+    val library: LibraryStore by lazy { LibraryStore(appContext) }
 
     private val cookieJar by lazy { PersistentCookieJar(appContext) }
 
@@ -76,9 +76,7 @@ object AppGraph {
     private val settingStore by lazy { SharedSettingSnapshotStore(appContext) }
     private val endpointPoolStore by lazy { SharedEndpointPoolStore(appContext) }
     private val apiClient by lazy { ApiClient(apiHttpClient, settingStore, endpointPoolStore) }
-    private val manifests by lazy { ChapterManifestCache(appContext) }
-    private val detailStore by lazy { ComicDetailCache(appContext) }
-    val downloadStore by lazy { DownloadStore(appContext) }
+    val downloadStore by lazy { DownloadStore(appContext, library) }
     val pageStore by lazy {
         PageImageStore(
             context = appContext,
@@ -94,13 +92,13 @@ object AppGraph {
         )
     }
     val comics: ComicRepository by lazy {
-        ComicRepository(apiClient, manifests, detailStore, downloadStore)
+        ComicRepository(apiClient, library)
     }
     val downloadManager by lazy {
         val manager =
             DownloadManager(
-                httpClient = imageHttpClient,
-                api = apiClient,
+                pageStore = pageStore,
+                progress = progress,
                 comics = comics,
                 store = downloadStore,
                 settings = settings,
@@ -109,9 +107,9 @@ object AppGraph {
         watchDownloadNetwork(manager)
         manager
     }
-    val history: HistoryStore by lazy { HistoryStore(appContext) }
+    val history: HistoryStore by lazy { HistoryStore(library) }
     val favorites: FavoritesStore by lazy { FavoritesStore(appContext) }
-    val progress: ProgressStore by lazy { ProgressStore(appContext) }
+    val progress: ProgressStore by lazy { ProgressStore(library) }
     val readerModes: ReaderModeStore by lazy { ReaderModeStore(appContext) }
 
     fun isPrefetchAllowed(): Boolean =
@@ -128,8 +126,7 @@ object AppGraph {
         return capped * 1024L * 1024L
     }
 
-    fun readerCacheSizeBytes(): Long =
-        pageStore.cacheSizeBytes() + manifests.sizeBytes() + detailStore.sizeBytes()
+    fun readerCacheSizeBytes(): Long = pageStore.cacheSizeBytes()
 
     fun networkMetrics(): NetworkStats {
         val snapshot = NetworkMetrics.snapshot()
@@ -143,10 +140,8 @@ object AppGraph {
         )
     }
 
-    fun clearReaderCache() {
+    suspend fun clearReaderCache() {
         pageStore.clearCache()
-        manifests.clear()
-        detailStore.clear()
     }
 
     private fun isUnmetered(): Boolean =

@@ -1,237 +1,159 @@
 package com.ppxb.miwaku.core.data.download
 
 import android.content.Context
-import com.ppxb.miwaku.model.ChapterContent
-import com.ppxb.miwaku.model.ReaderPage
+import com.ppxb.miwaku.core.data.LibraryStore
+import com.ppxb.miwaku.core.database.*
+import com.ppxb.miwaku.model.*
 import java.io.File
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
-import org.json.JSONArray
-import org.json.JSONObject
+import java.io.IOException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.withContext
 
 data class DownloadedPage(val fileName: String, val splitCount: Int)
-
 data class DownloadedChapter(
-    val albumId: String,
-    val chapterId: String,
-    val title: String,
-    val imageHost: String,
-    val pages: List<DownloadedPage>,
+    val albumId: String, val chapterId: String, val title: String,
+    val imageHost: String, val pages: List<DownloadedPage>,
 ) {
-    /** URLs are kept for the online fallback; the reader resolves the local file first. */
-    fun toContent(host: String): ChapterContent {
-        val base = host.trimEnd('/')
-        return ChapterContent(
-            albumId = albumId.ifBlank { chapterId },
-            chapterId = chapterId,
-            title = title,
-            pages =
-                pages.map { page ->
-                    ReaderPage(
-                        url = "$base/media/photos/$chapterId/${page.fileName}",
-                        splitCount = page.splitCount,
-                        fileName = page.fileName,
-                    )
-                },
-        )
-    }
+    fun toContent(host: String) = ChapterContent(albumId, chapterId, title, pages.map {
+        ReaderPage(host.trimEnd('/') + "/media/photos/" + chapterId + "/" + it.fileName, it.splitCount, it.fileName)
+    })
 }
 
-/**
- * Owns offline downloads: one directory per chapter plus a small task list. Everything lives in
- * filesDir, never in the reader cache, so clearing the cache cannot delete downloaded chapters.
- */
-class DownloadStore(context: Context) {
-    private val root = File(context.filesDir, DOWNLOAD_DIR)
-    private val tasksFile = File(root, TASKS_FILE)
-    private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+/** Room owns indices; original files retain their existing locations. */
+class DownloadStore(private val context: Context, private val library: LibraryStore) {
+    private val root = File(context.filesDir, "downloads")
+    private val prefs = context.getSharedPreferences("downloads", Context.MODE_PRIVATE)
+    val tasks = library.observe { observeTasks() }.map { list -> list.map { row ->
+        val t = row.task
+        DownloadTask(t.albumId, t.albumTitle, t.chapterId, t.chapterName, t.chapterSort,
+            DownloadState.entries.firstOrNull { it.name == t.state } ?: DownloadState.Failed,
+            row.donePages, t.totalPages, t.message, t.updatedAt)
+    } }.shareIn(library.scope, SharingStarted.Eagerly, replay = 1)
+    val downloaded = library.observe { observeDownloaded() }.map { it.toSet() }
+        .stateIn(library.scope, SharingStarted.Eagerly, emptySet())
 
-    private val _downloaded = MutableStateFlow<Set<String>>(emptySet())
-    val downloaded: StateFlow<Set<String>> = _downloaded.asStateFlow()
+    suspend fun awaitReady() = library.awaitReady()
+    suspend fun state(chapterId: String): DownloadState? = library.read {
+        task(chapterId)?.state?.let { name -> DownloadState.entries.firstOrNull { it.name == name } }
+    }
+    suspend fun completedTasks(): List<TaskRecord> = library.read { tasks().filter { it.state == "Completed" } }
+    fun isPaused() = prefs.getBoolean("queue_paused", false)
+    fun setPaused(value: Boolean) { prefs.edit().putBoolean("queue_paused", value).apply() }
 
-    /** Scans finished chapters; called from an IO thread, never from the constructor. */
-    fun refreshDownloaded() {
-        _downloaded.value = scanDownloaded()
+    fun pageFile(chapterId: String, index: Int, fileName: String): File =
+        File(File(chapterDir(chapterId), "pages"), index.toString().padStart(4, '0') + "_" + safe(fileName))
+
+    suspend fun manifest(chapterId: String): DownloadedChapter? = library.read {
+        if (task(chapterId)?.state != "Completed") return@read null
+        val c = chapter(chapterId) ?: return@read null
+        DownloadedChapter(c.albumId, chapterId, c.name, c.imageHost,
+            pages(chapterId).map { DownloadedPage(it.fileName, it.splitCount) })
     }
 
-    fun isPaused(): Boolean = prefs.getBoolean(KEY_PAUSED, false)
-
-    fun setPaused(paused: Boolean) {
-        prefs.edit().putBoolean(KEY_PAUSED, paused).apply()
-    }
-
-    fun pageFile(chapterId: String, index: Int, fileName: String): File {
-        val pagesDir = File(chapterDir(chapterId), PAGES_DIR)
-        val safeName = sanitize(fileName).ifEmpty { "page" }
-        return File(pagesDir, index.toString().padStart(4, '0') + "_" + safeName)
-    }
-
-    fun manifest(chapterId: String): DownloadedChapter? {
-        val file = File(chapterDir(chapterId), MANIFEST_FILE)
-        if (!file.isFile) return null
-        return runCatching {
-            val json = JSONObject(file.readText())
-            val pagesJson = json.optJSONArray("pages") ?: JSONArray()
-            val pages =
-                buildList {
-                    for (index in 0 until pagesJson.length()) {
-                        val item = pagesJson.optJSONObject(index) ?: continue
-                        val name = item.optString("name")
-                        if (name.isBlank()) continue
-                        add(DownloadedPage(name, item.optInt("split", 0)))
-                    }
-                }
-            if (pages.isEmpty()) return@runCatching null
-            DownloadedChapter(
-                albumId = json.optString("albumId"),
-                chapterId = chapterId,
-                title = json.optString("title"),
-                imageHost = json.optString("imageHost"),
-                pages = pages,
-            )
-        }.getOrNull()
-    }
-
-    fun putManifest(chapter: DownloadedChapter) {
-        val json =
-            JSONObject()
-                .put("albumId", chapter.albumId)
-                .put("chapterId", chapter.chapterId)
-                .put("title", chapter.title)
-                .put("imageHost", chapter.imageHost.trimEnd('/'))
-                .put("savedAt", System.currentTimeMillis())
-                .put(
-                    "pages",
-                    JSONArray().apply {
-                        chapter.pages.forEach { page ->
-                            put(
-                                JSONObject()
-                                    .put("name", page.fileName)
-                                    .put("split", page.splitCount),
-                            )
-                        }
-                    },
-                )
-        writeAtomic(File(chapterDir(chapter.chapterId), MANIFEST_FILE), json.toString())
-        _downloaded.update { it + chapter.chapterId }
-    }
-
-    /** Removes a chapter's directory and its downloaded flag. Call from an IO thread. */
-    fun deleteChapter(chapterId: String) {
-        chapterDir(chapterId).deleteRecursively()
-        _downloaded.update { it - chapterId }
-    }
-
-    fun chapterSizeBytes(chapterId: String): Long = chapterDir(chapterId).sizeBytes()
-
-    fun downloadSizeBytes(): Long =
-        root.listFiles()
-            ?.filter { it.isDirectory }
-            ?.sumOf { it.sizeBytes() }
-            ?: 0L
-
-    private fun File.sizeBytes(): Long =
-        walkTopDown().filter { it.isFile }.sumOf { it.length() }
-
-    fun loadTasks(): List<DownloadTask> {
-        if (!tasksFile.isFile) return emptyList()
-        return runCatching {
-            val array = JSONArray(tasksFile.readText())
-            buildList {
-                for (index in 0 until array.length()) {
-                    val item = array.optJSONObject(index) ?: continue
-                    val chapterId = item.optString("chapterId")
-                    val albumId = item.optString("albumId")
-                    if (chapterId.isBlank() || albumId.isBlank()) continue
-                    add(
-                        DownloadTask(
-                            albumId = albumId,
-                            albumTitle = item.optString("albumTitle"),
-                            chapterId = chapterId,
-                            chapterName = item.optString("chapterName"),
-                            chapterSort = item.optInt("chapterSort"),
-                            state =
-                                DownloadState.entries.firstOrNull { it.name == item.optString("state") }
-                                    ?: DownloadState.Queued,
-                            donePages = item.optInt("donePages"),
-                            totalPages = item.optInt("totalPages"),
-                            message = item.optString("message").takeIf { it.isNotBlank() },
-                            updatedAt = item.optLong("updatedAt"),
-                        ),
-                    )
-                }
-            }
-        }.getOrDefault(emptyList())
-    }
-
-    fun saveTasks(tasks: List<DownloadTask>) {
-        val array =
-            JSONArray().apply {
-                tasks.forEach { task ->
-                    put(
-                        JSONObject()
-                            .put("albumId", task.albumId)
-                            .put("albumTitle", task.albumTitle)
-                            .put("chapterId", task.chapterId)
-                            .put("chapterName", task.chapterName)
-                            .put("chapterSort", task.chapterSort)
-                            .put("state", task.state.name)
-                            .put("donePages", task.donePages)
-                            .put("totalPages", task.totalPages)
-                            .put("message", task.message ?: "")
-                            .put("updatedAt", task.updatedAt),
-                    )
-                }
-            }
-        runCatching { writeAtomic(tasksFile, array.toString()) }
-    }
-
-    private fun scanDownloaded(): Set<String> {
-        val dirs = root.listFiles { file -> file.isDirectory } ?: return emptySet()
-        return dirs
-            .filter { dir ->
-                val manifest = File(dir, MANIFEST_FILE)
-                if (!manifest.isFile) return@filter false
-                runCatching {
-                    val pages = JSONObject(manifest.readText()).optJSONArray("pages")
-                    (pages?.length() ?: 0) > 0
-                }.getOrDefault(false)
-            }
-            .map { it.name }
-            .toSet()
-    }
-
-    private fun chapterDir(chapterId: String): File =
-        File(root, sanitize(chapterId).ifEmpty { "chapter" })
-
-    private fun writeAtomic(target: File, text: String) {
-        target.parentFile?.mkdirs()
-        val temp = File.createTempFile("${target.name}.", ".tmp", target.parentFile)
-        try {
-            temp.writeText(text)
-            if (!temp.renameTo(target)) {
-                if (target.exists()) target.delete()
-                if (!temp.renameTo(target)) {
-                    // Last resort: a non-atomic write beats losing the manifest/task list.
-                    target.writeText(text)
-                }
-            }
-        } finally {
-            if (temp.exists()) temp.delete()
+    suspend fun recordPage(chapterId: String, index: Int, fileName: String) {
+        val file = pageFile(chapterId, index, fileName)
+        library.transaction {
+            if (task(chapterId) != null) putDownloadedPage(DownloadPageRecord(chapterId, index, fileName,
+                file.relativeTo(context.filesDir).path, file.length()))
         }
     }
 
-    private fun sanitize(value: String): String =
-        value.filter { it.isLetterOrDigit() || it == '-' || it == '_' || it == '.' }
-
-    private companion object {
-        const val DOWNLOAD_DIR = "downloads"
-        const val PAGES_DIR = "pages"
-        const val MANIFEST_FILE = "manifest.json"
-        const val TASKS_FILE = "tasks.json"
-        const val PREFS_NAME = "downloads"
-        const val KEY_PAUSED = "queue_paused"
+    suspend fun putManifest(chapter: DownloadedChapter) {
+        withContext(Dispatchers.IO) {
+            chapter.pages.forEachIndexed { index, page ->
+                if (!valid(pageFile(chapter.chapterId, index, page.fileName))) throw IOException("offline page missing")
+            }
+        }
+        library.transaction {
+            val existing = task(chapter.chapterId) ?: return@transaction
+            putTask(existing.copy(state = "Completed", totalPages = chapter.pages.size,
+                message = null, updatedAt = System.currentTimeMillis()))
+        }
     }
+
+    suspend fun enqueue(albumId: String, title: String, requested: List<ChapterSummary>?, unreadOnly: Boolean = false) =
+        library.transaction {
+            val order = lastQueueOrder()
+            val selected = if (unreadOnly) unread(albumId).map { ChapterSummary(it.id, it.name, it.sort) }
+                else requested.orEmpty()
+            selected.forEachIndexed { index, chapter ->
+                val existing = task(chapter.id)
+                if (existing?.state in listOf("Queued", "Running", "Completed")) return@forEachIndexed
+                seedComic(ComicRecord(albumId, title))
+                seedChapter(ChapterRecord(chapter.id, albumId, chapter.name, chapter.sort))
+                putTask(existing?.copy(state = "Queued", message = null, updatedAt = System.currentTimeMillis())
+                    ?: TaskRecord(chapter.id, albumId, title, chapter.name, chapter.sort,
+                        updatedAt = System.currentTimeMillis(), queueOrder = order + index + 1))
+            }
+        }
+
+    suspend fun nextQueued(): DownloadTask? = library.read {
+        val t = tasks().firstOrNull { it.state == "Queued" } ?: return@read null
+        DownloadTask(t.albumId, t.albumTitle, t.chapterId, t.chapterName, t.chapterSort,
+            DownloadState.Queued, downloadedPages(t.chapterId).size, t.totalPages, t.message, t.updatedAt)
+    }
+
+    suspend fun update(chapterId: String, state: DownloadState? = null, totalPages: Int? = null, message: String? = null) =
+        library.transaction {
+            val old = task(chapterId) ?: return@transaction
+            putTask(old.copy(state = state?.name ?: old.state, totalPages = totalPages ?: old.totalPages,
+                message = message, updatedAt = System.currentTimeMillis()))
+        }
+
+    suspend fun requeueRunning(chapterId: String) = library.transaction {
+        task(chapterId)?.takeIf { it.state == "Running" }?.let { putTask(it.copy(state = "Queued")) }
+    }
+    suspend fun recoverRunning() = library.transaction { recoverRunning() }
+
+    /** Reconcile trusted completion records at startup, not on every UI query. */
+    suspend fun refreshDownloaded() {
+        val complete = library.read { tasks().filter { it.state == "Completed" } }
+        for (task in complete) {
+            val pages = library.read { pages(task.chapterId) }
+            val missing = withContext(Dispatchers.IO) {
+                pages.filterNot { valid(pageFile(it.chapterId, it.index, it.fileName)) }
+            }
+            if (pages.isEmpty() || missing.isNotEmpty()) {
+                library.transaction { missing.forEach { removeDownloadedPage(it.chapterId, it.index) } }
+                update(task.chapterId, DownloadState.Failed, message = "离线文件不完整，可重试恢复")
+            }
+        }
+    }
+
+    /** User removal is reversible: move files to the app's recycle directory first. */
+    suspend fun deleteChapter(chapterId: String) {
+        val original = chapterDir(chapterId)
+        var recycled: File? = null
+        withContext(Dispatchers.IO) {
+            val dir = original
+            if (dir.exists()) {
+                val trash = File(context.filesDir, "recycle/downloads")
+                trash.mkdirs()
+                val target = File(trash, safe(chapterId) + "-" + System.nanoTime())
+                if (!dir.renameTo(target)) {
+                    throw IOException("cannot recycle downloaded chapter")
+                }
+                recycled = target
+            }
+        }
+        try { library.transaction { clearDownloadedPages(chapterId); removeTask(chapterId) } }
+        catch (failure: Exception) {
+            withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
+                recycled?.let { if (!original.exists()) it.renameTo(original) }
+            }
+            throw failure
+        }
+    }
+
+    fun chapterSizeBytes(chapterId: String): Long = chapterDir(chapterId).sizeBytes()
+    fun downloadSizeBytes(): Long = root.listFiles()?.filter { it.isDirectory }?.sumOf { it.sizeBytes() } ?: 0L
+    private fun File.sizeBytes(): Long = walkTopDown().filter { it.isFile }.sumOf { it.length() }
+    private fun chapterDir(id: String) = File(root, safe(id))
+    private fun safe(value: String) = value.filter { it.isLetterOrDigit() || it in "-_." }.ifEmpty { "page" }
+    /**
+     * Existence check only: pages are written atomically and validated before the copy, so
+     * decoding every downloaded page at startup would cost seconds for no extra signal.
+     */
+    private fun valid(file: File): Boolean = file.isFile && file.length() > 0L
 }

@@ -24,6 +24,9 @@ import com.ppxb.miwaku.ui.theme.MiwakuTheme
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
+import androidx.compose.foundation.layout.fillMaxSize
+import com.ppxb.miwaku.core.data.LibraryStartup
 
 class MainActivity : ComponentActivity() {
     private val settings by lazy { AppGraph.settings }
@@ -36,6 +39,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                AppGraph.library.startup.first { it == LibraryStartup.Ready }
                 val downloads = AppGraph.downloadManager
                 combine(downloads.tasks, downloads.isPaused) { tasks, paused ->
                     !paused &&
@@ -53,6 +57,21 @@ class MainActivity : ComponentActivity() {
             }
         }
         setContent {
+            val startup by AppGraph.library.startup.collectAsState()
+            if (startup != LibraryStartup.Ready) {
+                MiwakuTheme {
+                    androidx.compose.foundation.layout.Box(
+                        androidx.compose.ui.Modifier.fillMaxSize(),
+                        contentAlignment = androidx.compose.ui.Alignment.Center,
+                    ) {
+                        if (startup == LibraryStartup.Loading) androidx.compose.material3.Text("正在准备本地阅读数据…")
+                        else androidx.compose.material3.Button(onClick = { AppGraph.library.retryInitialization() }) {
+                            androidx.compose.material3.Text("本地数据迁移失败，原数据已保留。点击重试")
+                        }
+                    }
+                }
+                return@setContent
+            }
             val themeMode by settings.themeMode.collectAsState()
             val liquidGlass by settings.liquidGlass.collectAsState()
             val placeholderCovers by settings.placeholderCovers.collectAsState()

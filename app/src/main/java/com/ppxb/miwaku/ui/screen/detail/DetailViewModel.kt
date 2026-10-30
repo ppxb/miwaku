@@ -11,6 +11,9 @@ import com.ppxb.miwaku.model.ChapterSummary
 import com.ppxb.miwaku.model.ComicDetail
 import com.ppxb.miwaku.model.ComicSummary
 import com.ppxb.miwaku.model.ReadingProgress
+import com.ppxb.miwaku.model.ChapterProgress
+import com.ppxb.miwaku.core.data.image.PagePriority
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -34,6 +37,7 @@ internal sealed interface DetailUiState {
     data class Failed(val message: String) : DetailUiState
 }
 
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel() {
     private val id: String = checkNotNull(savedStateHandle.get<String>("id"))
 
@@ -41,9 +45,22 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
     val state: StateFlow<DetailUiState> = _state.asStateFlow()
 
     val resume: StateFlow<ReadingProgress?> =
-        AppGraph.progress.entries
-            .map { it[id] }
+        state.flatMapLatest { ui -> AppGraph.progress.observeResume((ui as? DetailUiState.Content)?.detail?.id ?: id) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    val chapterProgress: StateFlow<Map<String, ChapterProgress>> = state.flatMapLatest { ui ->
+        AppGraph.progress.observeChapters((ui as? DetailUiState.Content)?.detail?.id ?: id)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+    private val _operationError = MutableStateFlow<String?>(null)
+    val operationError = _operationError.asStateFlow()
+
+    fun markRead(chapter: ChapterSummary, read: Boolean) {
+        viewModelScope.launch {
+            try { AppGraph.progress.markRead(chapter.id, read); _operationError.value = null }
+            catch (cancel: CancellationException) { throw cancel }
+            catch (_: Exception) { _operationError.value = "阅读状态保存失败，请重试" }
+        }
+    }
 
     val downloadTasks: StateFlow<Map<String, DownloadTask>> =
         combine(AppGraph.downloadManager.tasks, state) { tasks, ui ->
@@ -129,7 +146,8 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
             }
     }
 
-    private fun show(detail: ComicDetail) {        AppGraph.history.record(
+    private fun show(detail: ComicDetail) {
+        AppGraph.history.record(
             ComicSummary(
                 id = detail.id,
                 title = detail.title,
@@ -143,14 +161,19 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
     /** Enqueues the chapters covered by [range]; the anchor is the last read chapter, if any. */
     fun download(range: DownloadRange) {
         val detail = (state.value as? DetailUiState.Content)?.detail ?: return
-        val anchor = anchorIndex(detail)
-        val selected =
-            when (range) {
+        if (range == DownloadRange.Unread) {
+            AppGraph.downloadManager.enqueueUnread(detail.id, detail.title)
+            return
+        }
+        viewModelScope.launch {
+            AppGraph.progress.flush()
+            val anchor = anchorIndex(detail)
+            val selected = when (range) {
                 DownloadRange.All -> detail.chapters
-                DownloadRange.Unread -> detail.chapters.drop(anchor + 1)
                 else -> detail.chapters.drop(anchor + 1).take(range.nextCount ?: 0)
             }
-        enqueue(detail, selected)
+            enqueue(detail, selected)
+        }
     }
 
     fun downloadChapter(chapter: ChapterSummary) {
@@ -174,8 +197,8 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
         refreshInBackground()
     }
 
-    private fun anchorIndex(detail: ComicDetail): Int {
-        val progress = AppGraph.progress.entries.value[detail.id] ?: return -1
+    private suspend fun anchorIndex(detail: ComicDetail): Int {
+        val progress = AppGraph.progress.resume(detail.id) ?: return -1
         return detail.chapters.indexOfFirst { it.id == progress.chapterId }
     }
 
@@ -189,9 +212,10 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
      * progress, otherwise the first chapter from page 0.
      */
     private fun prefetchFirstChapter(detail: ComicDetail) {
+        prefetchJob?.cancel()
         prefetchJob =
             viewModelScope.launch(Dispatchers.IO) {
-                val progress = AppGraph.progress.entries.value[detail.id]
+                val progress = AppGraph.progress.resume(detail.id)
                 val resumeChapter =
                     progress?.let { saved ->
                         detail.chapters.firstOrNull { it.id == saved.chapterId }
@@ -240,7 +264,7 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
                 val ordered = images.sortedBy { abs(it.index - safePage) }
                 ordered.firstOrNull()?.let { image ->
                     try {
-                        AppGraph.pageStore.prepare(image)
+                        AppGraph.pageStore.prepare(image, PagePriority.Warmup)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (_: Exception) {
@@ -252,7 +276,7 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
                         batch.forEach { image ->
                             launch {
                                 try {
-                                    AppGraph.pageStore.prepare(image)
+                                    AppGraph.pageStore.prepare(image, PagePriority.Warmup)
                                 } catch (e: CancellationException) {
                                     throw e
                                 } catch (_: Exception) {

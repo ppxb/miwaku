@@ -89,8 +89,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
-import coil.compose.AsyncImage
-import coil.request.ImageRequest
+import coil3.compose.AsyncImage
+import coil3.request.ImageRequest
+import coil3.request.crossfade
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.LaunchedEffect
+import com.ppxb.miwaku.model.ChapterProgress
 import com.ppxb.miwaku.R
 import com.ppxb.miwaku.core.data.download.DownloadState
 import com.ppxb.miwaku.core.data.download.DownloadTask
@@ -130,14 +134,17 @@ internal fun DetailScreen(
     modifier: Modifier = Modifier,
     viewModel: DetailViewModel = viewModel(),
 ) {
-    val state by viewModel.state.collectAsState()
-    val resume by viewModel.resume.collectAsState()
-    val tasks by viewModel.downloadTasks.collectAsState()
-    val downloaded by viewModel.downloadedChapters.collectAsState()
-    val favorite by viewModel.isFavorite.collectAsState()
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val resume by viewModel.resume.collectAsStateWithLifecycle()
+    val tasks by viewModel.downloadTasks.collectAsStateWithLifecycle()
+    val downloaded by viewModel.downloadedChapters.collectAsStateWithLifecycle()
+    val favorite by viewModel.isFavorite.collectAsStateWithLifecycle()
+    val reading by viewModel.chapterProgress.collectAsStateWithLifecycle()
+    val operationError by viewModel.operationError.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
     val hazeState = rememberHazeState()
     val context = LocalContext.current
+    LaunchedEffect(operationError) { operationError?.let { android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show() } }
     val density = LocalDensity.current
     val barThreshold = with(density) { 96.dp.toPx() }
     val scrolled by remember {
@@ -152,7 +159,7 @@ internal fun DetailScreen(
             resume?.let { progress -> current.chapters.firstOrNull { it.id == progress.chapterId } }
         }
     val resumeTarget = resumeChapter ?: detail?.chapters?.firstOrNull()
-    val resumePage = if (resumeChapter != null) resume?.page ?: 0 else 0
+    val resumePage = if (resumeChapter != null) -2 else 0
 
     DarkSystemBars()
 
@@ -181,6 +188,8 @@ internal fun DetailScreen(
                             detail = current.detail,
                             tasks = tasks,
                             downloaded = downloaded,
+                            reading = reading,
+                            onMarkRead = viewModel::markRead,
                             listState = listState,
                             hazeState = hazeState,
                             background = DetailBackground,
@@ -520,6 +529,8 @@ private fun DetailContent(
     detail: ComicDetail,
     tasks: Map<String, DownloadTask>,
     downloaded: Set<String>,
+    reading: Map<String, ChapterProgress>,
+    onMarkRead: (ChapterSummary, Boolean) -> Unit,
     listState: LazyListState,
     hazeState: HazeState,
     background: Color,
@@ -564,7 +575,10 @@ private fun DetailContent(
                 chapter = chapter,
                 task = tasks[chapter.id],
                 downloaded = downloaded.contains(chapter.id),
-                onClick = { onOpenChapter(detail.id, chapter.id, 0) },
+                progress = reading[chapter.id],
+                onClick = { onOpenChapter(detail.id, chapter.id, -2) },
+                onStart = { onOpenChapter(detail.id, chapter.id, 0) },
+                onMarkRead = { onMarkRead(chapter, reading[chapter.id]?.isRead != true) },
                 onDownload = { onDownloadChapter(chapter) },
             )
             if (index == detail.chapters.lastIndex) {
@@ -782,9 +796,13 @@ private fun ChapterTrack(
     chapter: ChapterSummary,
     task: DownloadTask?,
     downloaded: Boolean,
+    progress: ChapterProgress?,
     onClick: () -> Unit,
+    onStart: () -> Unit,
+    onMarkRead: () -> Unit,
     onDownload: () -> Unit,
 ) {
+    var showActions by remember { mutableStateOf(false) }
     Row(
         modifier =
             Modifier
@@ -793,14 +811,23 @@ private fun ChapterTrack(
                 .padding(start = 20.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = chapter.name,
-            style = MaterialTheme.typography.bodyMedium,
-            color = Color.White,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
+        Column(Modifier.weight(1f)) {
+            Text(chapter.name, style = MaterialTheme.typography.bodyMedium, color = Color.White,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(when {
+                progress?.isRead == true -> "已读"
+                progress?.hasStarted == true -> "阅读中 · 第 " + ((progress.page ?: 0) + 1) + " 页"
+                else -> "未读"
+            }, style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.6f))
+        }
+        Box {
+            TextButton(onClick = { showActions = true }) { Text("操作") }
+            androidx.compose.material3.DropdownMenu(expanded = showActions, onDismissRequest = { showActions = false }) {
+                androidx.compose.material3.DropdownMenuItem(text = { Text(if (progress?.isRead == true) "标记为未读" else "标记为已读") },
+                    onClick = { showActions = false; onMarkRead() })
+                androidx.compose.material3.DropdownMenuItem(text = { Text("从头阅读") }, onClick = { showActions = false; onStart() })
+            }
+        }
         Spacer(Modifier.width(8.dp))
         ChapterDownloadControl(
             task = task,

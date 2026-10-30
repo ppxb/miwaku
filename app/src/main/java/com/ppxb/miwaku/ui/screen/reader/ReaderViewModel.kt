@@ -5,516 +5,382 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ppxb.miwaku.core.data.AppGraph
 import com.ppxb.miwaku.core.data.image.PageImage
+import com.ppxb.miwaku.core.data.image.PagePriority
 import com.ppxb.miwaku.core.data.image.PageSize
-import com.ppxb.miwaku.core.data.image.ReaderPerf
-import com.ppxb.miwaku.model.ChapterContent
-import com.ppxb.miwaku.model.ChapterSummary
+import com.ppxb.miwaku.model.*
 import java.io.File
-import java.util.concurrent.atomic.AtomicBoolean
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
 
-/**
- * Consecutive chapters rendered as one continuous page list, mirroring the reference reader. Pages
- * of the next chapter are appended before the user reaches the end, so turning past the last page
- * simply continues into the next chapter.
- */
+internal data class ReaderAnchor(val key: String, val offset: Int)
+
 internal data class ReaderWindow(
     val chapters: List<ChapterContent>,
     val activeIndex: Int,
     val id: Int,
+    val revision: Int = 0,
+    val anchor: ReaderAnchor? = null,
 ) {
     val active: ChapterContent get() = chapters[activeIndex]
-
-    val totalPages: Int get() = chapters.sumOf { it.pages.size }
-
-    fun startOf(index: Int): Int {
-        var start = 0
-        for (i in 0 until index) start += chapters[i].pages.size
-        return start
-    }
-
-    /** Maps a global page index to (chapter index, page index inside that chapter). */
+    val images = chapters.flatMap { chapter -> chapter.pages.mapIndexed { index, page ->
+        PageImage(chapter.chapterId, page.fileName.ifBlank { "page-" + index }, index, page.splitCount, page.url)
+    } }
+    val indexByKey = images.mapIndexed { index, image -> image.cacheKey to index }.toMap()
+    val totalPages: Int get() = images.size
+    fun startOf(index: Int) = chapters.take(index).sumOf { it.pages.size }
     fun locate(global: Int): Pair<Int, Int> {
-        var start = 0
+        var remaining = global
         for ((index, chapter) in chapters.withIndex()) {
-            val size = chapter.pages.size
-            if (global < start + size) return index to (global - start)
-            start += size
+            if (remaining < chapter.pages.size) return index to remaining
+            remaining -= chapter.pages.size
         }
-        val last = chapters.lastIndex.coerceAtLeast(0)
-        return last to chapters[last].pages.lastIndex.coerceAtLeast(0)
+        return chapters.lastIndex to chapters.last().pages.lastIndex.coerceAtLeast(0)
     }
 }
 
 internal sealed interface ReaderUiState {
     data object Loading : ReaderUiState
-
     data class Content(val window: ReaderWindow) : ReaderUiState
-
     data class Failed(val message: String) : ReaderUiState
 }
-
 internal sealed interface NextChapterState {
     data object Unknown : NextChapterState
-
     data object None : NextChapterState
-
     data class Next(val chapter: ChapterSummary) : NextChapterState
 }
 
 internal class ReaderViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel() {
-    val albumId: String = checkNotNull(savedStateHandle.get<String>("albumId"))
-
-    /**
-     * Active chapter. It changes when the page list crosses into an appended chapter; written on the
-     * main thread and read from IO while resolving the chapter list.
-     */
-    @Volatile
-    var chapterId: String = checkNotNull(savedStateHandle.get<String>("chapterId"))
+    val albumId: String = checkNotNull(savedStateHandle["albumId"])
+    var chapterId: String = checkNotNull(savedStateHandle["chapterId"])
         private set
-
-    /**
-     * Page the first chapter should start at. `-1` means the last page, used when going back a
-     * chapter so it opens at the end.
-     */
-    var startPage: Int = savedStateHandle.get<Int>("page") ?: 0
+    var startPage: Int = if (savedStateHandle.get<Boolean>("restorePosition") == true) -2 else savedStateHandle["page"] ?: 0
         private set
-
+    var startOffsetFraction = 0f
+        private set
+    var startPageKey: String? = null
+        private set
     private val _state = MutableStateFlow<ReaderUiState>(ReaderUiState.Loading)
-    val state: StateFlow<ReaderUiState> = _state.asStateFlow()
-
+    val state = _state.asStateFlow()
     private val _chapters = MutableStateFlow<List<ChapterSummary>>(emptyList())
-    val chapters: StateFlow<List<ChapterSummary>> = _chapters.asStateFlow()
-
-    /**
-     * Album title from the detail endpoint. The `/chapter` payload carries its own `name`, but the
-     * source fills that per chapter (short name plus volume number), so the header prefers this.
-     */
+    val chapters = _chapters.asStateFlow()
     private val _albumTitle = MutableStateFlow("")
-    val albumTitle: StateFlow<String> = _albumTitle.asStateFlow()
-
+    val albumTitle = _albumTitle.asStateFlow()
     val pageSizes: StateFlow<Map<String, PageSize>> = AppGraph.pageStore.sizes
-
     private val _failedPages = MutableStateFlow<Set<String>>(emptySet())
-    val failedPages: StateFlow<Set<String>> = _failedPages.asStateFlow()
-
+    val failedPages = _failedPages.asStateFlow()
     private val _nextChapter = MutableStateFlow<NextChapterState>(NextChapterState.Unknown)
-    val nextChapter: StateFlow<NextChapterState> = _nextChapter.asStateFlow()
-
+    val nextChapter = _nextChapter.asStateFlow()
     private val _previousChapter = MutableStateFlow<ChapterSummary?>(null)
-    val previousChapter: StateFlow<ChapterSummary?> = _previousChapter.asStateFlow()
+    val previousChapter = _previousChapter.asStateFlow()
+    val saveError = AppGraph.progress.error
 
-    private var loadJob: Job? = null
-    private var prefetcher: ReaderPrefetcher? = null
-    private var detailJob: Job? = null
-    private var nextManifestJob: Job? = null
-    private var nextPrefetchJob: Job? = null
-    private var appendJob: Job? = null
+    private var session = 0L
     private var windowId = 0
+    private var loadJob: Job? = null
+    private var detailJob: Job? = null
+    private val neighbors = mutableMapOf<String, Job>()
+    private val pendingNeighbors = mutableMapOf<String, ChapterContent>()
+    private var requester: ReaderPrefetcher? = null
     private var currentGlobal = 0
-    private var currentLocal = startPage
-    private val nextPrefetchStarted = AtomicBoolean(false)
-    private var prefetchedNextId: String? = null
-    private var pendingTargetChapter: String? = null
+    private var forward = true
+    private var jumping = false
+    private var target: PageImage? = null
+    private val shown = mutableSetOf<String>()
+    private var completedVisible = emptySet<String>()
+    private var lastPosition: ReadingProgress? = null
+    private var viewport: Viewport? = null
 
-    /** Snapshot used to restore the previous window when a chapter load fails. */
-    private data class Rollback(
-        val window: ReaderWindow,
-        val chapterId: String,
-        val startPage: Int,
-        val global: Int,
+    private data class Viewport(
+        val id: Int, val revision: Int, val visibleKeys: Set<String>, val anchorPage: String,
+        val anchor: ReaderAnchor, val fraction: Float, val endKeys: Set<String>,
+        val scrolling: Boolean, val canRecord: Boolean,
     )
 
-    private var rollback: Rollback? = null
+    init { load() }
 
-    init {
-        load()
-    }
-
-    /**
-     * Replaces the window with [target]. Used by explicit jumps (chapter list, chapter arrows) and
-     * by the previous/next buttons; natural page turns never go through here.
-     */
     fun openChapterInPlace(target: String, startAtEnd: Boolean = false) {
-        val content = _state.value as? ReaderUiState.Content
-        if (target == chapterId && content != null) return
-        if (content != null) {
-            rollback = Rollback(content.window, chapterId, startPage, currentGlobal)
-        }
+        if (target == chapterId && _state.value is ReaderUiState.Content) return
         chapterId = target
-        startPage = if (startAtEnd) -1 else 0
-        pendingTargetChapter = target
-        savedStateHandle["chapterId"] = target
-        savedStateHandle["page"] = startPage
+        startPage = if (startAtEnd) -1 else -2
         load(keepContent = true)
     }
 
     fun load(keepContent: Boolean = false) {
+        val previous = (_state.value as? ReaderUiState.Content)?.window
+        val previouslyShown = shown.toSet()
         loadJob?.cancel()
-        appendJob?.cancel()
-        prefetcher?.cancel()
-        prefetcher = null
         detailJob?.cancel()
-        nextManifestJob?.cancel()
-        nextPrefetchJob?.cancel()
-        nextPrefetchStarted.set(false)
-        currentGlobal = 0
-        currentLocal = startPage
-        _nextChapter.value = NextChapterState.Unknown
-        _previousChapter.value = null
-        _failedPages.value = emptySet()
-        ReaderPerf.log {
-            "reader_load_start chapter=$chapterId page=$startPage"
-        }
+        neighbors.values.forEach { it.cancel() }
+        neighbors.clear()
+        pendingNeighbors.clear()
+        requester?.cancel()
+        requester = null
+        jumping = true
+        session = AppGraph.progress.beginSession()
+        shown.clear()
+        completedVisible = emptySet()
+        lastPosition = null
+        val requestedChapter = chapterId
+        val requestedPage = startPage
         loadJob = viewModelScope.launch {
             if (!keepContent) _state.value = ReaderUiState.Loading
-            val started = ReaderPerf.mark()
             try {
-                val content = withContext(Dispatchers.IO) { AppGraph.comics.chapter(albumId, chapterId) }
-                val resolvedStart =
-                    if (startPage < 0) {
-                        content.pages.lastIndex.coerceAtLeast(0)
-                    } else {
-                        startPage.coerceIn(0, content.pages.lastIndex.coerceAtLeast(0))
-                    }
-                currentGlobal = resolvedStart
-                currentLocal = resolvedStart
-                startPage = resolvedStart
-                savedStateHandle["page"] = resolvedStart
-                _state.value =
-                    ReaderUiState.Content(
-                        ReaderWindow(listOf(content), activeIndex = 0, id = ++windowId),
-                    )
-                ReaderPerf.log {
-                    "reader_content_ready chapter=$chapterId pages=${content.pages.size} ms=${ReaderPerf.mark() - started}"
+                val content = withContext(Dispatchers.IO) { AppGraph.comics.chapter(albumId, requestedChapter) }
+                val saved = if (requestedPage == -2) AppGraph.progress.chapter(requestedChapter) else null
+                val savedIndex = saved?.fileName?.let { name -> content.pages.indexOfFirst { it.fileName == name }.takeIf { it >= 0 } }
+                val index = when {
+                    requestedPage == -1 -> content.pages.lastIndex
+                    requestedPage == -2 -> savedIndex ?: saved?.page ?: 0
+                    else -> requestedPage
+                }.coerceIn(0, content.pages.lastIndex.coerceAtLeast(0))
+                startPage = index
+                startOffsetFraction = saved?.offsetFraction ?: 0f
+                currentGlobal = index
+                viewport = null
+                target = null
+                shown.clear()
+                _failedPages.value = emptySet()
+                val window = ReaderWindow(listOf(content), 0, ++windowId)
+                startPageKey = window.images.getOrNull(index)?.cacheKey
+                _state.value = ReaderUiState.Content(window)
+                jumping = false
+                saveNavigation(content.chapterId, index)
+                createRequester(window.id)
+                // Prepare only the resume page and nearby metadata, never scan an entire chapter on entry.
+                val initial = window.images.getOrNull(index)
+                if (initial != null) {
+                    target = initial
+                    requester?.update(listOf(PageDemand(initial, PagePriority.Visible)))
+                    launch(Dispatchers.IO) { AppGraph.pageStore.loadCachedSizes(window.images.drop(index).take(8)) }
                 }
-                startPrefetch(content, resolvedStart)
-                rollback = null
-                pendingTargetChapter = null
                 resolveChapters()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                ReaderPerf.log { "reader_load_failed chapter=$chapterId msg=${e.message}" }
-                android.util.Log.w("Reader", "chapter load failed: $albumId/$chapterId", e)
-                val restore = rollback
-                if (keepContent && restore != null) {
-                    // The jump failed: put the previous window back so the reader stays usable.
-                    rollback = null
-                    pendingTargetChapter = null
-                    chapterId = restore.chapterId
-                    startPage = restore.startPage
-                    currentGlobal = restore.global
-                    val window = restore.window
-                    val (_, local) = window.locate(restore.global)
-                    currentLocal = local
-                    savedStateHandle["chapterId"] = restore.chapterId
-                    savedStateHandle["page"] = local
-                    _state.value = ReaderUiState.Content(window)
-                    startPrefetch(window.active, local)
+            } catch (cancel: CancellationException) { throw cancel }
+            catch (_: Exception) {
+                jumping = false
+                if (previous != null && keepContent) {
+                    shown += previouslyShown
+                    chapterId = previous.active.chapterId
+                    _state.value = ReaderUiState.Content(previous)
+                    createRequester(previous.id)
+                    updateDemand()
                     resolveChapters()
-                } else {
-                    pendingTargetChapter = null
-                    _state.value = ReaderUiState.Failed("加载失败，请重试")
-                }
+                } else _state.value = ReaderUiState.Failed("加载失败，请重试")
             }
         }
     }
 
-    /**
-     * Called whenever the visible page changes. Updates the active chapter, progress and appends the
-     * next chapter when the end of the window is near.
-     */
-    fun onPageVisible(windowId: Int, global: Int) {
-        val content = _state.value as? ReaderUiState.Content ?: return
-        if (content.window.id != windowId) return
-        // A jump is loading; ignore stale reports from the window that is being replaced.
-        if (pendingTargetChapter != null) return
-        val window = content.window
-        if (global !in 0 until window.totalPages) return
-        val (chapterIndex, local) = window.locate(global)
-        val chapter = window.chapters[chapterIndex]
+    private fun createRequester(id: Int) {
+        requester = ReaderPrefetcher(viewModelScope, AppGraph.pageStore,
+            onPageReady = { image -> if (currentWindow()?.id == id) _failedPages.update { it - image.cacheKey } },
+            onPageFailed = { image -> if (currentWindow()?.id == id) _failedPages.update { it + image.cacheKey } })
+    }
+
+    // Compatibility for initial navigation; only image + viewport confirmation records progress.
+    fun onPageVisible(id: Int, global: Int) {
+        val window = currentWindow()?.takeIf { it.id == id } ?: return
+        if (global !in window.images.indices || jumping) return
         currentGlobal = global
-        currentLocal = local
-        if (chapterIndex != window.activeIndex) {
-            chapterId = chapter.chapterId
-            savedStateHandle["chapterId"] = chapter.chapterId
+    }
+
+    fun onViewport(
+        id: Int, revision: Int, visible: List<Int>, anchorPage: Int,
+        anchorKey: String, offsetPx: Int, fraction: Float, ends: Set<Int>,
+        scrolling: Boolean, canRecord: Boolean,
+    ) {
+        val window = currentWindow()?.takeIf { it.id == id && it.revision == revision } ?: return
+        if (jumping || anchorPage !in window.images.indices) return
+        if (anchorPage != currentGlobal) forward = anchorPage > currentGlobal
+        currentGlobal = anchorPage
+        val image = window.images[anchorPage]
+        viewport = Viewport(id, revision, visible.mapNotNull { window.images.getOrNull(it)?.cacheKey }.toSet(),
+            image.cacheKey, ReaderAnchor(anchorKey, offsetPx), fraction,
+            ends.mapNotNull { window.images.getOrNull(it)?.cacheKey }.toSet(), scrolling, canRecord)
+        if (target?.cacheKey in viewport!!.visibleKeys) target = null
+        val (chapterIndex, _) = window.locate(anchorPage)
+        if (window.activeIndex != chapterIndex) {
+            chapterId = window.chapters[chapterIndex].chapterId
             _state.value = ReaderUiState.Content(window.copy(activeIndex = chapterIndex))
-            startPrefetch(chapter, local)
             updateNeighbors()
         }
-        savedStateHandle["page"] = local
-        prefetcher?.update(local)
-        maybePrefetchNext(local)
-        AppGraph.progress.record(albumId, chapter.chapterId, local)
-        if (global >= window.totalPages - APPEND_THRESHOLD) ensureNextLoaded()
+        updateDemand()
+        recordVisible()
+        if (!scrolling) { applyPendingNeighbors(); trimWindow() }
+    }
+
+    fun imageDisplayed(id: Int, image: PageImage, successful: Boolean) {
+        val window = currentWindow()?.takeIf { it.id == id && image.cacheKey in it.indexByKey } ?: return
+        if (successful) shown += image.cacheKey else shown -= image.cacheKey
+        if (successful) _failedPages.update { it - image.cacheKey }
+        if (!jumping && window.revision == viewport?.revision) recordVisible()
+    }
+
+    private fun recordVisible() {
+        val window = currentWindow() ?: return
+        val view = viewport?.takeIf { it.id == window.id && it.revision == window.revision && it.canRecord } ?: return
+        val image = window.indexByKey[view.anchorPage]?.let { window.images[it] } ?: return
+        if (image.cacheKey in shown && image.cacheKey in view.visibleKeys) {
+            val fraction = (view.fraction.coerceIn(0f, 1f) * 1000).toInt() / 1000f
+            val position = ReadingProgress(image.chapterId, image.index, image.fileName, fraction)
+            if (position != lastPosition) {
+                AppGraph.progress.record(session, albumId, position)
+                lastPosition = position
+                saveNavigation(image.chapterId, image.index)
+                savedStateHandle["restorePosition"] = true
+            }
+        }
+        val ends = view.endKeys.filter { key ->
+            key in shown && key in view.visibleKeys && window.images[window.indexByKey.getValue(key)].let { page ->
+                window.chapters.first { it.chapterId == page.chapterId }.pages.lastIndex == page.index
+            }
+        }.toSet()
+        (ends - completedVisible).forEach { key ->
+            val page = window.images[window.indexByKey.getValue(key)]
+            AppGraph.progress.record(session, albumId, ReadingProgress(page.chapterId, page.index, page.fileName,
+                if (page.cacheKey == image.cacheKey) view.fraction else 0f), completed = true)
+        }
+        completedVisible = ends
+    }
+
+    private fun updateDemand() {
+        val window = currentWindow() ?: return
+        val visible = viewport?.visibleKeys.orEmpty().mapNotNull(window.indexByKey::get).ifEmpty { listOf(currentGlobal) }
+        val demands = linkedMapOf<String, PageDemand>()
+        fun add(index: Int, priority: PagePriority) {
+            window.images.getOrNull(index)?.let { image -> demands.putIfAbsent(image.cacheKey, PageDemand(image, priority)) }
+        }
+        visible.forEach { add(it, PagePriority.Visible) }
+        target?.let { demands[it.cacheKey] = PageDemand(it, PagePriority.Visible) }
+        if (AppGraph.isPrefetchAllowed()) {
+            val ahead = if (AppGraph.settings.lowMemory.value) 2 else AppGraph.settings.readerPrefetchAhead.value
+            val behind = if (AppGraph.settings.lowMemory.value) 1 else 2
+            val first = visible.minOrNull() ?: currentGlobal
+            val last = visible.maxOrNull() ?: currentGlobal
+            for (distance in 1..ahead) add(if (forward) last + distance else first - distance, PagePriority.Nearby)
+            for (distance in 1..behind) add(if (forward) first - distance else last + distance, PagePriority.Behind)
+        }
+        requester?.update(demands.values.toList())
     }
 
     fun fileOf(image: PageImage): File? = AppGraph.pageStore.cachedFile(image)
 
     fun ensurePage(image: PageImage) {
-        viewModelScope.launch {
-            try {
-                AppGraph.pageStore.prepare(image)
-                _failedPages.update { it - image.cacheKey }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                _failedPages.update { it + image.cacheKey }
-            }
-        }
+        target = image
+        updateDemand()
     }
 
     fun retry(image: PageImage) {
         viewModelScope.launch {
             withContext(Dispatchers.IO) { AppGraph.pageStore.invalidate(image) }
+            requester?.retry(image.cacheKey)
             _failedPages.update { it - image.cacheKey }
             ensurePage(image)
-            prefetcher?.update(currentLocal)
         }
     }
+
+    fun flush() { AppGraph.progress.flushSession(session) }
 
     fun retryNextChapter() {
-        when (_nextChapter.value) {
-            is NextChapterState.Next -> ensureNextLoaded()
-            else -> resolveChapters()
-        }
-    }
-
-    override fun onCleared() {
-        prefetcher?.cancel()
-        detailJob?.cancel()
-        nextManifestJob?.cancel()
-        nextPrefetchJob?.cancel()
-        appendJob?.cancel()
-        super.onCleared()
-    }
-
-    /** Loads the next chapter and appends its pages to the current window. */
-    private fun ensureNextLoaded() {
-        val content = _state.value as? ReaderUiState.Content ?: return
-        val next = (_nextChapter.value as? NextChapterState.Next)?.chapter ?: return
-        val window = content.window
-        if (window.chapters.any { it.chapterId == next.id }) return
-        if (appendJob?.isActive == true) return
-        val windowIdAtStart = window.id
-        appendJob =
-            viewModelScope.launch(Dispatchers.IO) {
-                val started = ReaderPerf.mark()
-                ReaderPerf.log { "append_start next=${next.id}" }
-                val loaded =
-                    try {
-                        AppGraph.comics.chapter(albumId, next.id)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                        ReaderPerf.log { "append_failed next=${next.id}" }
-                        return@launch
-                    }
-                val current = _state.value as? ReaderUiState.Content ?: return@launch
-                val currentWindow = current.window
-                // The user may have jumped to another chapter while the manifest was loading.
-                if (currentWindow.id != windowIdAtStart) return@launch
-                if (currentWindow.chapters.any { it.chapterId == next.id }) return@launch
-                if (loaded.pages.isEmpty()) {
-                    ReaderPerf.log { "append_empty next=${next.id}" }
-                    return@launch
-                }
-                ReaderPerf.log {
-                    "append_done next=${next.id} pages=${loaded.pages.size} ms=${ReaderPerf.mark() - started}"
-                }
-                withContext(Dispatchers.Main) {
-                    val latest = _state.value as? ReaderUiState.Content ?: return@withContext
-                    if (latest.window.id != windowIdAtStart) return@withContext
-                    if (latest.window.chapters.any { it.chapterId == next.id }) return@withContext
-                    _state.value =
-                        ReaderUiState.Content(
-                            latest.window.copy(chapters = latest.window.chapters + loaded),
-                        )
-                    updateNeighbors()
-                }
-                viewModelScope.launch(Dispatchers.IO) {
-                    AppGraph.pageStore.loadCachedSizes(
-                        loaded.pages.mapIndexed { index, page ->
-                            PageImage(
-                                chapterId = loaded.chapterId,
-                                fileName = page.fileName.ifBlank { "page-$index" },
-                                index = index,
-                                splitCount = page.splitCount,
-                                url = page.url,
-                            )
-                        },
-                    )
-                }
-            }
-    }
-
-    private fun startPrefetch(content: ChapterContent, startPage: Int) {
-        prefetcher?.cancel()
-        val images =
-            content.pages.mapIndexed { index, page ->
-                PageImage(
-                    chapterId = content.chapterId,
-                    fileName = page.fileName.ifBlank { "page-$index" },
-                    index = index,
-                    splitCount = page.splitCount,
-                    url = page.url,
-                )
-            }
-        prefetcher =
-            ReaderPrefetcher(
-                scope = viewModelScope,
-                store = AppGraph.pageStore,
-                pages = images,
-                onPageReady = { image -> _failedPages.update { it - image.cacheKey } },
-                onPageFailed = { image -> _failedPages.update { it + image.cacheKey } },
-                ahead =
-                    if (AppGraph.settings.lowMemory.value) {
-                        minOf(AppGraph.settings.readerPrefetchAhead.value, LOW_MEMORY_PREFETCH_AHEAD)
-                    } else {
-                        AppGraph.settings.readerPrefetchAhead.value
-                    },
-                behind = if (AppGraph.settings.lowMemory.value) LOW_MEMORY_PREFETCH_BEHIND else 2,
-                prefetchAllowed = { AppGraph.isPrefetchAllowed() },
-            ).also { it.start(startPage) }
-        viewModelScope.launch(Dispatchers.IO) { AppGraph.pageStore.loadCachedSizes(images) }
+        val next = (_nextChapter.value as? NextChapterState.Next)?.chapter
+        if (next == null) resolveChapters() else loadNeighbor(next)
     }
 
     private fun resolveChapters() {
         detailJob?.cancel()
-        detailJob = viewModelScope.launch(Dispatchers.IO) {
-            val started = ReaderPerf.mark()
-            val detail =
-                try {
-                    AppGraph.comics.detail(albumId)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    null
-                }
-            if (detail == null) {
-                ReaderPerf.log { "next_resolve_failed chapter=$chapterId" }
-                return@launch
-            }
-            _chapters.value = detail.chapters
-            _albumTitle.value = detail.title
-            updateNeighbors()
-            ReaderPerf.log {
-                "next_resolved chapter=$chapterId ms=${ReaderPerf.mark() - started}"
-            }
+        detailJob = viewModelScope.launch {
+            try {
+                val detail = withContext(Dispatchers.IO) { AppGraph.comics.detail(albumId) }
+                _chapters.value = detail.chapters
+                _albumTitle.value = detail.title
+                updateNeighbors()
+            } catch (cancel: CancellationException) { throw cancel }
+            catch (_: Exception) { /* The loaded/offline chapter stays readable. */ }
         }
     }
 
-    /** Recomputes the previous/next chapter relative to the current window. */
     private fun updateNeighbors() {
-        val content = _state.value as? ReaderUiState.Content ?: return
+        val window = currentWindow() ?: return
         val list = _chapters.value
-        if (list.isEmpty()) return
-        val window = content.window
-        val activePosition = list.indexOfFirst { it.id == window.active.chapterId }
-        _previousChapter.value = if (activePosition >= 0) list.getOrNull(activePosition - 1) else null
-        val next = if (activePosition >= 0) list.getOrNull(activePosition + 1) else null
-        _nextChapter.value = if (next != null) NextChapterState.Next(next) else NextChapterState.None
-        if (next != null) {
-            if (next.id != prefetchedNextId) {
-                prefetchedNextId = next.id
-                nextPrefetchStarted.set(false)
-            }
-            prefetchNextManifest(next)
-            maybePrefetchNext(currentLocal)
-            // The chapter list may arrive after the reader already sits near the end.
-            if (currentGlobal >= window.totalPages - APPEND_THRESHOLD) ensureNextLoaded()
+        val active = list.indexOfFirst { it.id == window.active.chapterId }
+        if (active < 0) return
+        _previousChapter.value = list.getOrNull(active - 1)
+        _nextChapter.value = list.getOrNull(active + 1)?.let { NextChapterState.Next(it) } ?: NextChapterState.None
+        if (AppGraph.isPrefetchAllowed()) {
+            list.getOrNull(active - 1)?.let(::loadNeighbor)
+            list.getOrNull(active + 1)?.let(::loadNeighbor)
         }
     }
 
-    private fun prefetchNextManifest(next: ChapterSummary) {
-        nextManifestJob?.cancel()
-        nextManifestJob =
-            viewModelScope.launch(Dispatchers.IO) {
-                if (!AppGraph.isPrefetchAllowed()) {
-                    ReaderPerf.log { "next_manifest_skipped_metered next=${next.id}" }
-                    return@launch
-                }
-                if (AppGraph.settings.lowMemory.value) {
-                    ReaderPerf.log { "next_manifest_skipped_low_memory next=${next.id}" }
-                    return@launch
-                }
-                val started = ReaderPerf.mark()
-                ReaderPerf.log { "next_manifest_start next=${next.id}" }
-                try {
-                    AppGraph.comics.chapter(albumId, next.id)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    // The append will fetch it again if needed.
-                }
-                ReaderPerf.log {
-                    "next_manifest_done next=${next.id} ms=${ReaderPerf.mark() - started}"
-                }
-            }
+    private fun loadNeighbor(chapter: ChapterSummary) {
+        val original = currentWindow() ?: return
+        if (original.chapters.any { it.chapterId == chapter.id } || neighbors[chapter.id]?.isActive == true) return
+        neighbors[chapter.id] = viewModelScope.launch {
+            try {
+                val content = withContext(Dispatchers.IO) { AppGraph.comics.chapter(albumId, chapter.id) }
+                val current = currentWindow()?.takeIf { it.id == original.id } ?: return@launch
+                val list = _chapters.value
+                val center = list.indexOfFirst { it.id == current.active.chapterId }
+                if (content.pages.isEmpty() || list.indexOfFirst { it.id == chapter.id } !in center - 1..center + 1) return@launch
+                val chapters = (current.chapters + content).distinctBy { it.chapterId }
+                    .sortedBy { item -> list.indexOfFirst { it.id == item.chapterId } }
+                if (chapters.first().chapterId != current.chapters.first().chapterId && viewport?.scrolling == true) {
+                    pendingNeighbors[content.chapterId] = content
+                } else publish(current, chapters)
+            } catch (cancel: CancellationException) { throw cancel }
+            catch (_: Exception) { /* Explicit navigation retries failed neighbors. */ }
+            finally { if (neighbors[chapter.id] === currentCoroutineContext()[Job]) neighbors.remove(chapter.id) }
+        }
     }
 
-    private fun maybePrefetchNext(page: Int) {
-        val content = _state.value as? ReaderUiState.Content ?: return
-        val chapter = content.window.active
-        val next = (_nextChapter.value as? NextChapterState.Next)?.chapter ?: return
-        if (chapter.pages.isEmpty()) return
-        if (page < chapter.pages.size - NEXT_PREFETCH_THRESHOLD) return
-        if (AppGraph.settings.lowMemory.value) return
-        if (!AppGraph.isPrefetchAllowed()) return
-        if (!nextPrefetchStarted.compareAndSet(false, true)) return
-        nextPrefetchJob =
-            viewModelScope.launch(Dispatchers.IO) {
-                val started = ReaderPerf.mark()
-                ReaderPerf.log { "next_prefetch_start next=${next.id} page=$page" }
-                val nextContent =
-                    try {
-                        AppGraph.comics.chapter(albumId, next.id)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                        null
-                    }
-                if (nextContent != null) {
-                    val images =
-                        nextContent.pages.mapIndexed { index, pageItem ->
-                            PageImage(
-                                chapterId = nextContent.chapterId,
-                                fileName = pageItem.fileName.ifBlank { "page-$index" },
-                                index = index,
-                                splitCount = pageItem.splitCount,
-                                url = pageItem.url,
-                            )
-                        }
-                    images.take(NEXT_PREFETCH_PAGES).forEach { image ->
-                        try {
-                            AppGraph.pageStore.prepare(image)
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (_: Exception) {
-                            // The reader will retry on demand when the append lands.
-                        }
-                    }
-                }
-                ReaderPerf.log {
-                    "next_prefetch_done next=${next.id} ms=${ReaderPerf.mark() - started}"
-                }
-            }
+    private fun trimWindow() {
+        val current = currentWindow() ?: return
+        if (current.chapters.size <= 3) return
+        val list = _chapters.value
+        val center = list.indexOfFirst { it.id == current.active.chapterId }
+        val keep = listOfNotNull(list.getOrNull(center - 1)?.id, current.active.chapterId, list.getOrNull(center + 1)?.id).toMutableSet()
+        viewport?.visibleKeys.orEmpty().forEach { key -> current.indexByKey[key]?.let { keep += current.images[it].chapterId } }
+        target?.let { keep += it.chapterId }
+        val chapters = current.chapters.filter { it.chapterId in keep }
+        if (chapters.size < current.chapters.size) publish(current, chapters)
     }
 
-    private companion object {
-        const val APPEND_THRESHOLD = 5
-        const val NEXT_PREFETCH_THRESHOLD = 5
-        const val NEXT_PREFETCH_PAGES = 5
-        const val LOW_MEMORY_PREFETCH_AHEAD = 2
-        const val LOW_MEMORY_PREFETCH_BEHIND = 1
+    private fun applyPendingNeighbors() {
+        if (pendingNeighbors.isEmpty()) return
+        val current = currentWindow() ?: return
+        val catalog = _chapters.value
+        val center = catalog.indexOfFirst { it.id == current.active.chapterId }
+        val added = pendingNeighbors.values.filter { chapter ->
+            catalog.indexOfFirst { it.id == chapter.chapterId } in center - 1..center + 1
+        }
+        pendingNeighbors.clear()
+        if (added.isNotEmpty()) publish(current, (current.chapters + added).distinctBy { it.chapterId }
+            .sortedBy { chapter -> catalog.indexOfFirst { it.id == chapter.chapterId } })
+    }
+
+    private fun publish(previous: ReaderWindow, chapters: List<ChapterContent>) {
+        val currentKey = previous.images.getOrNull(currentGlobal)?.cacheKey
+        val appended = chapters.take(previous.chapters.size).map { it.chapterId } == previous.chapters.map { it.chapterId }
+        val pendingAnchor = previous.anchor?.takeIf { viewport?.revision != previous.revision }
+        val next = ReaderWindow(chapters, chapters.indexOfFirst { it.chapterId == previous.active.chapterId }.coerceAtLeast(0),
+            previous.id, previous.revision + 1, if (appended) pendingAnchor else pendingAnchor ?: viewport?.anchor ?: previous.images.getOrNull(currentGlobal)?.let {
+                ReaderAnchor("p:" + it.chapterId + ":" + it.index + ":" + it.fileName, 0)
+            })
+        currentGlobal = next.indexByKey[currentKey] ?: 0
+        _state.value = ReaderUiState.Content(next)
+        val kept = next.indexByKey.keys
+        shown.retainAll(kept)
+        _failedPages.update { it.intersect(kept) }
+        updateDemand()
+    }
+
+    private fun currentWindow() = (_state.value as? ReaderUiState.Content)?.window
+    private fun saveNavigation(chapter: String, page: Int) {
+        savedStateHandle["chapterId"] = chapter
+        savedStateHandle["page"] = page
+    }
+
+    override fun onCleared() {
+        requester?.cancel()
+        AppGraph.progress.flushSession(session, end = true)
+        super.onCleared()
     }
 }

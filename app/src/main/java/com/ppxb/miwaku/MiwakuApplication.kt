@@ -1,25 +1,29 @@
 package com.ppxb.miwaku
 
 import android.app.Application
-import coil.ImageLoader
-import coil.ImageLoaderFactory
-import coil.disk.DiskCache
-import coil.memory.MemoryCache
+import coil3.ImageLoader
+import android.content.Context
+import coil3.SingletonImageLoader
+import coil3.disk.directory
+import coil3.memoryCacheMaxSizePercentWhileInBackground
+import coil3.disk.DiskCache
+import coil3.memory.MemoryCache
 import com.ppxb.miwaku.core.data.AppGraph
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 
-class MiwakuApplication : Application(), ImageLoaderFactory {
+class MiwakuApplication : Application(), SingletonImageLoader.Factory {
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val imageLoader: ImageLoader by lazy {
         val memoryCacheBytes =
             minOf((Runtime.getRuntime().maxMemory() * MEMORY_CACHE_PERCENT).toLong(), MAX_MEMORY_CACHE_BYTES)
         ImageLoader.Builder(this)
             .memoryCache {
-                MemoryCache.Builder(this)
-                    .maxSizeBytes(memoryCacheBytes.toInt())
+                MemoryCache.Builder()
+                    .maxSizeBytes(memoryCacheBytes)
                     .build()
             }
             .diskCache {
@@ -30,7 +34,8 @@ class MiwakuApplication : Application(), ImageLoaderFactory {
             }
             // Image URLs are content-addressed by album/chapter id, so cache headers only
             // get in the way of keeping covers around.
-            .respectCacheHeaders(false)
+            .decoderCoroutineContext(Dispatchers.IO.limitedParallelism(1))
+            .memoryCacheMaxSizePercentWhileInBackground(0.5)
             .build()
     }
 
@@ -38,15 +43,19 @@ class MiwakuApplication : Application(), ImageLoaderFactory {
         super.onCreate()
         AppGraph.init(this)
         // Restore queued chapters off the main thread; the manager reads its task list from disk.
-        appScope.launch { AppGraph.downloadManager }
+        appScope.launch {
+            try {
+                AppGraph.library.awaitReady()
+                AppGraph.downloadManager
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (_: Exception) {
+                // MainActivity presents the migration failure without discarding the legacy data.
+            }
+        }
     }
 
-    override fun newImageLoader(): ImageLoader = imageLoader
-
-    override fun onTrimMemory(level: Int) {
-        super.onTrimMemory(level)
-        imageLoader.memoryCache?.trimMemory(level)
-    }
+    override fun newImageLoader(context: Context): ImageLoader = imageLoader
 
     private companion object {
         const val MEMORY_CACHE_PERCENT = 0.25
