@@ -1,6 +1,7 @@
 package com.ppxb.miwaku.core.network
 
-import android.app.ActivityManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Debug
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -8,10 +9,13 @@ import androidx.test.platform.app.InstrumentationRegistry
 import coil3.ImageLoader
 import coil3.memory.MemoryCache
 import coil3.request.CachePolicy
+import coil3.size.Size
 import com.ppxb.miwaku.core.data.AppGraph
 import com.ppxb.miwaku.core.data.image.PageImage
 import com.ppxb.miwaku.core.data.image.PageImageStore
 import com.ppxb.miwaku.reader.image.PageImageRequests
+import com.ppxb.miwaku.ui.reader.ScrambleTransformation
+import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -108,6 +112,105 @@ class PagePipelineBenchmarkTest {
             )
             loader.shutdown()
         }
+    }
+
+    /**
+     * Same pages, two strategies: transform while displaying (current) versus descramble + re-encode
+     * at write time (Breeze style). Compares CPU per page and the resulting bytes on disk.
+     */
+    @Test
+    fun compareReadTimeAndWriteTimeDescramble() {
+        runBlocking {
+        val comics = AppGraph.comics
+        val detail = comics.detail(ALBUM_ID)
+        val chapter = comics.chapter(detail.id, detail.chapters.first().id)
+        val images =
+            chapter.pages.take(PAGES).mapIndexed { index, page ->
+                PageImage(chapter.chapterId, page.fileName, index, page.splitCount, page.url)
+            }
+
+        cacheRoot.deleteRecursively()
+        val store = newStore(4, 2, 6)
+        coroutineScope { images.map { async { runCatching { store.prepare(it) } } }.awaitAll() }
+        val files = images.mapNotNull { store.cachedFile(it)?.takeIf { file -> file.isFile } }
+        if (files.size < images.size) Log.w(TAG, "descramble: only ${files.size}/${images.size} cached")
+
+        // 1) read time: Coil + ScrambleTransformation, exactly like the reader.
+        val loader =
+            ImageLoader.Builder(context)
+                .decoderCoroutineContext(Dispatchers.IO.limitedParallelism(3))
+                .memoryCache { MemoryCache.Builder().maxSizeBytes(1).build() }
+                .diskCachePolicy(CachePolicy.DISABLED)
+                .build()
+        var readMs = 0L
+        repeat(3) {
+            val started = System.nanoTime()
+            coroutineScope {
+                files.mapIndexed { index, file ->
+                    async {
+                        runCatching {
+                            loader.execute(PageImageRequests.build(context, images[index], file, 1080, 0))
+                        }
+                    }
+                }.awaitAll()
+            }
+            readMs += (System.nanoTime() - started) / 1_000_000L
+        }
+        Log.i(TAG, "descramble read-time pages=${files.size} avg=${readMs / 3}ms")
+        loader.shutdown()
+
+        // 2) write time: decode, reorder rows, re-encode.
+        var decodeMs = 0L
+        var transformMs = 0L
+        var jpegMs = 0L
+        var webpMs = 0L
+        var originalBytes = 0L
+        var jpegBytes = 0L
+        var webpBytes = 0L
+        val baseline = pssMb()
+        var peak = baseline
+        val sampler = launch { while (isActive) { peak = maxOf(peak, pssMb()); delay(20) } }
+        for ((index, file) in files.withIndex()) {
+            originalBytes += file.length()
+            val decodeStarted = System.nanoTime()
+            val bitmap = BitmapFactory.decodeFile(file.absolutePath) ?: continue
+            decodeMs += (System.nanoTime() - decodeStarted) / 1_000_000L
+
+            val transformStarted = System.nanoTime()
+            val transformed =
+                ScrambleTransformation(images[index].splitCount).transform(bitmap, Size.ORIGINAL)
+            transformMs += (System.nanoTime() - transformStarted) / 1_000_000L
+
+            val (jpegElapsed, jpegSize) = encode(transformed, Bitmap.CompressFormat.JPEG, 90)
+            jpegMs += jpegElapsed
+            jpegBytes += jpegSize
+            @Suppress("DEPRECATION")
+            val (webpElapsed, webpSize) = encode(transformed, Bitmap.CompressFormat.WEBP_LOSSY, 80)
+            webpMs += webpElapsed
+            webpBytes += webpSize
+
+            if (transformed !== bitmap) transformed.recycle()
+            bitmap.recycle()
+        }
+        sampler.cancelAndJoin()
+        Log.i(
+            TAG,
+            "descramble write-time pages=${files.size} decode=${decodeMs}ms transform=${transformMs}ms " +
+                "jpeg=${jpegMs}ms/${jpegBytes / 1024}KB webp=${webpMs}ms/${webpBytes / 1024}KB " +
+                "original=${originalBytes / 1024}KB pssDelta=${peak - baseline}MB",
+        )
+        }
+    }
+
+    private fun encode(
+        bitmap: Bitmap,
+        format: Bitmap.CompressFormat,
+        quality: Int,
+    ): Pair<Long, Long> {
+        val started = System.nanoTime()
+        val out = ByteArrayOutputStream()
+        bitmap.compress(format, quality, out)
+        return (System.nanoTime() - started) / 1_000_000L to out.size().toLong()
     }
 
     private fun newStore(readers: Int, downloads: Int, total: Int): PageImageStore =

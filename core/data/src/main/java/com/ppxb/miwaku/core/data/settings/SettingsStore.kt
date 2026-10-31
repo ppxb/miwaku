@@ -30,9 +30,6 @@ class SettingsStore(context: Context) {
     private val _wifiOnlyPrefetch = MutableStateFlow(prefs.getBoolean(KEY_WIFI_ONLY_PREFETCH, false))
     val wifiOnlyPrefetch: StateFlow<Boolean> = _wifiOnlyPrefetch.asStateFlow()
 
-    private val _lowMemory = MutableStateFlow(prefs.getBoolean(KEY_LOW_MEMORY, false))
-    val lowMemory: StateFlow<Boolean> = _lowMemory.asStateFlow()
-
     private val _readerCacheLimitMb = MutableStateFlow(readCacheLimitMb())
     val readerCacheLimitMb: StateFlow<Int> = _readerCacheLimitMb.asStateFlow()
 
@@ -87,11 +84,6 @@ class SettingsStore(context: Context) {
     fun setWifiOnlyPrefetch(enabled: Boolean) {
         _wifiOnlyPrefetch.value = enabled
         prefs.edit { putBoolean(KEY_WIFI_ONLY_PREFETCH, enabled) }
-    }
-
-    fun setLowMemory(enabled: Boolean) {
-        _lowMemory.value = enabled
-        prefs.edit { putBoolean(KEY_LOW_MEMORY, enabled) }
     }
 
     fun setReaderCacheLimitMb(mb: Int) {
@@ -194,7 +186,6 @@ class SettingsStore(context: Context) {
         const val KEY_PLACEHOLDER_COVERS = "placeholder_covers"
         const val KEY_PREFETCH_AHEAD = "reader_prefetch_ahead"
         const val KEY_WIFI_ONLY_PREFETCH = "wifi_only_prefetch"
-        const val KEY_LOW_MEMORY = "low_memory"
         const val KEY_CACHE_LIMIT_MB = "reader_cache_limit_mb"
         const val KEY_READER_BACKGROUND = "reader_background"
         const val KEY_READER_KEEP_SCREEN_ON = "reader_keep_screen_on"

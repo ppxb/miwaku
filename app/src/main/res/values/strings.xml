@@ -173,8 +173,6 @@
     <string name="settings_prefetch_pages_option">%1$d 页</string>
     <string name="settings_wifi_only_prefetch">仅 Wi-Fi 预取</string>
     <string name="settings_wifi_only_prefetch_description">移动网络只加载当前可见页，不预取后续页</string>
-    <string name="settings_low_memory">低内存模式</string>
-    <string name="settings_low_memory_description">减少预取页数，并把阅读缓存限制在 256 MB 以内</string>
     <string name="settings_section_style">样式</string>
     <string name="settings_theme">主题</string>
     <string name="settings_theme_system">跟随系统</string>

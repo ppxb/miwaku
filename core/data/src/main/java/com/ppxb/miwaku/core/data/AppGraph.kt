@@ -152,16 +152,7 @@ object AppGraph {
     fun isPrefetchAllowed(): Boolean =
         !settings.wifiOnlyPrefetch.value || isUnmetered()
 
-    fun effectiveCacheLimitBytes(): Long {
-        val selected = settings.readerCacheLimitMb.value
-        val capped =
-            if (settings.lowMemory.value) {
-                minOf(selected, LOW_MEMORY_CACHE_LIMIT_MB)
-            } else {
-                selected
-            }
-        return capped * 1024L * 1024L
-    }
+    fun effectiveCacheLimitBytes(): Long = settings.readerCacheLimitMb.value * 1024L * 1024L
 
     fun readerCacheSizeBytes(): Long = pageStore.cacheSizeBytes()
 
@@ -268,6 +259,4 @@ object AppGraph {
             )
         }
     }
-
-    private const val LOW_MEMORY_CACHE_LIMIT_MB = 256
 }

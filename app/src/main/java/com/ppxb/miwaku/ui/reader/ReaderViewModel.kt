@@ -309,14 +309,13 @@ internal class ReaderViewModel(
         start: Int,
     ) {
         prefetcher?.cancel()
-        val lowMemory = AppGraph.settings.lowMemory.value
         prefetcher =
             ReaderPrefetcher(
                 scope = viewModelScope,
                 store = AppGraph.pageStore,
                 pages = pages.map { it.image },
-                ahead = if (lowMemory) LOW_MEMORY_PREFETCH_AHEAD else AppGraph.settings.readerPrefetchAhead.value,
-                behind = if (lowMemory) LOW_MEMORY_PREFETCH_BEHIND else DEFAULT_PREFETCH_BEHIND,
+                ahead = AppGraph.settings.readerPrefetchAhead.value,
+                behind = DEFAULT_PREFETCH_BEHIND,
                 prefetchAllowed = { AppGraph.isPrefetchAllowed() },
             ).also { it.start(start) }
     }
@@ -400,7 +399,5 @@ internal class ReaderViewModel(
         const val RESUME_SAVED = -2
         const val APPEND_THRESHOLD = 5
         const val DEFAULT_PREFETCH_BEHIND = 2
-        const val LOW_MEMORY_PREFETCH_AHEAD = 2
-        const val LOW_MEMORY_PREFETCH_BEHIND = 1
     }
 }

@@ -95,8 +95,6 @@ fun SettingsScreen(
     onPrefetchAheadChange: (Int) -> Unit,
     wifiOnlyPrefetch: Boolean,
     onWifiOnlyPrefetchChange: (Boolean) -> Unit,
-    lowMemory: Boolean,
-    onLowMemoryChange: (Boolean) -> Unit,
     cacheLimitMb: Int,
     onCacheLimitMbChange: (Int) -> Unit,
     downloadConcurrency: Int,
@@ -230,19 +228,6 @@ fun SettingsScreen(
                                     subtitle = stringResource(R.string.settings_wifi_only_prefetch_description),
                                     switch = wifiOnlyPrefetch to onWifiOnlyPrefetchChange,
                                 )
-                                SettingItem(
-                                    title = stringResource(R.string.settings_low_memory),
-                                    subtitle = stringResource(R.string.settings_low_memory_description),
-                                    switch =
-                                        lowMemory to { enabled ->
-                                            onLowMemoryChange(enabled)
-                                            scope.launch {
-                                                withContext(Dispatchers.IO) { AppGraph.pageStore.trimToLimit() }
-                                                cacheSize =
-                                                    withContext(Dispatchers.IO) { AppGraph.readerCacheSizeBytes() }
-                                            }
-                                        },
-                                )
                             }
                         }
                     }
@@ -310,13 +295,7 @@ fun SettingsScreen(
                                 subtitle = stringResource(R.string.settings_reader_cache_summary, cacheLabel),
                                 onClick = { showClearCacheDialog = true },
                             )
-                            val effectiveLimitMb =
-                                if (lowMemory) {
-                                    minOf(cacheLimitMb, LOW_MEMORY_CACHE_LIMIT_MB)
-                                } else {
-                                    cacheLimitMb
-                                }
-                            val limitLabel = cacheLimitLabel(effectiveLimitMb)
+                            val limitLabel = cacheLimitLabel(cacheLimitMb)
                             SettingItem(
                                 title = stringResource(R.string.settings_cache_limit),
                                 subtitle = stringResource(R.string.settings_cache_limit_summary, limitLabel),
@@ -522,7 +501,6 @@ private val CacheLimitOptions = listOf(512, 1024, 2048)
 private val DownloadConcurrencyOptions = listOf(1, 2, 3, 5)
 private val DownloadChapterOptions = listOf(1, 2, 3, 4, 5)
 private val DownloadLimitOptions = listOf(0, 2048, 4096, 8192, 16384)
-private const val LOW_MEMORY_CACHE_LIMIT_MB = 256
 
 private fun cacheLimitLabel(mb: Int): String =
     if (mb >= 1024 && mb % 1024 == 0) "${mb / 1024} GB" else "$mb MB"
