@@ -11,6 +11,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -243,7 +245,19 @@ class ApiClient(
     ): ApiPayload {
         var lastFailure: ApiFailure? = null
         val candidates = candidateBases(setting)
+        var startIndex = 0
+        // Fresh install (nothing probed yet): the first candidate may be a dead built-in base, and
+        // walking the list one by one costs a full timeout per hop. Race the first two instead.
+        if (candidates.size >= 2 && currentState().probedAt == 0L) {
+            try {
+                return hedge(candidates.take(2), setting, path, params, deadlineNs)
+            } catch (e: ApiFailure) {
+                lastFailure = e
+                startIndex = 2
+            }
+        }
         for ((index, base) in candidates.withIndex()) {
+            if (index < startIndex) continue
             val remaining = remainingMs(deadlineNs)
             if (remaining <= MIN_ATTEMPT_MS) break
             val attemptCap = if (index == 0) REQUEST_TIMEOUT_MS else FAILOVER_ATTEMPT_TIMEOUT_MS
@@ -275,6 +289,70 @@ class ApiClient(
     }
 
     private fun remainingMs(deadlineNs: Long): Long = (deadlineNs - System.nanoTime()) / 1_000_000L
+
+    /**
+     * Fires the same request at [bases] and returns the first success, cancelling the rest. Every
+     * failed attempt is penalised; when all of them fail the last failure is thrown.
+     */
+    private suspend fun hedge(
+        bases: List<String>,
+        setting: SettingSnapshot,
+        path: String,
+        params: Map<String, String>,
+        deadlineNs: Long,
+    ): ApiPayload = coroutineScope {
+        val results = Channel<Pair<String, Result<ApiPayload>>>(bases.size)
+        val jobs =
+            bases.map { base ->
+                launch {
+                    val remaining = remainingMs(deadlineNs)
+                    val result =
+                        if (remaining <= MIN_ATTEMPT_MS) {
+                            Result.failure(ApiFailure.Network("no budget"))
+                        } else {
+                            runCatching {
+                                val ts = now()
+                                val value =
+                                    requestJson(
+                                        base = base,
+                                        path = path,
+                                        params = params + ("t" to "$ts"),
+                                        ts = ts,
+                                        version = setting.version,
+                                        callTimeoutMs = minOf(REQUEST_TIMEOUT_MS, remaining),
+                                    )
+                                reward(base)
+                                if (base != setting.baseUrl) adoptBase(base)
+                                ApiPayload(value, setting.imageHost)
+                            }
+                        }
+                    results.send(base to result)
+                }
+            }
+
+        var lastFailure: ApiFailure? = null
+        repeat(bases.size) {
+            val (base, result) = results.receive()
+            val failure = result.exceptionOrNull()
+            if (failure == null) {
+                jobs.forEach { it.cancel() }
+                perf { "api_hedge_winner host=${base.hostName()}" }
+                return@coroutineScope result.getOrThrow()
+            }
+            if (failure is CancellationException) throw failure
+            if (failure is ApiFailure) {
+                penalize(base, failure)
+                lastFailure = failure
+            }
+        }
+        throw lastFailure ?: ApiFailure.Network("no usable base")
+    }
+
+    /** Healthy image hosts, best first; the page store spreads transfers across them. */
+    fun imageHosts(): List<String> {
+        val now = System.currentTimeMillis()
+        return currentState().rankedImage(now).filter { !it.isCoolingDown(now) }.map { it.url }
+    }
 
     private fun candidateBases(setting: SettingSnapshot): List<String> {
         val ranking = currentState().rankedApi(System.currentTimeMillis()).map { it.url }

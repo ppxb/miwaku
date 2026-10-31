@@ -38,6 +38,23 @@ class SharedEndpointStateStore(
         prefs.edit().putString(KEY_STATE, encode(state).toString()).apply()
     }
 
+    /**
+     * Seeds the compile-time selection when this install has never probed, so the first screen does
+     * not wait for `/setting`. `probedAt` stays 0, which makes the client refresh in the background.
+     */
+    fun seedBootstrapIfEmpty() {
+        if (read() != null) return
+        write(
+            EndpointState(
+                apiVersion = ApiConfig.APP_VERSION,
+                api = ApiConfig.API_BASES.map { EndpointHealth(it) },
+                image = ApiConfig.FALLBACK_IMAGE_BASES.map { EndpointHealth(it) },
+                chosenApi = ApiConfig.API_BASES.firstOrNull(),
+                chosenImage = ApiConfig.FALLBACK_IMAGE_BASES.firstOrNull(),
+            ),
+        )
+    }
+
     private fun migrateLegacy(): EndpointState? {
         val pool = runCatching {
             context.getSharedPreferences(LEGACY_POOL, Context.MODE_PRIVATE)

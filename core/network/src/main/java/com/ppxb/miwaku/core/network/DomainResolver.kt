@@ -369,6 +369,11 @@ internal class DomainResolver(
 
     companion object {
         const val DEFAULT_PROBE_CONCURRENCY = 6
+        /**
+         * Measured links answer /setting in 1.6-3.2 s; shorter budgets (2.5 s, 4 s) wrongly marked
+         * reachable mirrors dead. The probe now runs behind a seeded bootstrap selection, so its
+         * duration no longer delays the first screen and accuracy wins.
+         */
         const val PROBE_TIMEOUT_MS = 6_000L
         const val REMOTE_CONFIG_TIMEOUT_MS = 5_000L
         const val IMAGE_PROBE_CONCURRENCY = 4

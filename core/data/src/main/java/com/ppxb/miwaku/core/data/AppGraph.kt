@@ -22,6 +22,7 @@ import com.ppxb.miwaku.core.network.SharedEndpointStateStore
 import com.ppxb.miwaku.core.network.UserAgentStore
 import java.util.concurrent.TimeUnit
 import kotlin.time.Duration.Companion.seconds
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 
 data class NetworkStats(
@@ -77,6 +78,14 @@ object AppGraph {
             .writeTimeout(8, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
             .cookieJar(cookieJar)
+            // OkHttp defaults to 5 concurrent requests per host, which caps the reader's page
+            // transfers long before PageImageStore's own budget is reached.
+            .dispatcher(
+                Dispatcher().apply {
+                    maxRequests = 64
+                    maxRequestsPerHost = 8
+                },
+            )
             .build()
     }
 
@@ -112,7 +121,11 @@ object AppGraph {
 
     private val endpointStateStore by lazy { SharedEndpointStateStore(appContext) }
     private val userAgent by lazy { UserAgentStore(appContext).userAgent }
-    private val apiClient by lazy { ApiClient(apiHttpClient, endpointStateStore, probeHttpClient, userAgent) }
+    private val apiClient by lazy {
+        // First launch: start from the built-in bases instead of blocking the UI on /setting.
+        endpointStateStore.seedBootstrapIfEmpty()
+        ApiClient(apiHttpClient, endpointStateStore, probeHttpClient, userAgent)
+    }
     val downloadStore by lazy { DownloadStore(appContext, library) }
     val pageStore by lazy {
         PageImageStore(
@@ -126,6 +139,7 @@ object AppGraph {
                     .takeIf { it.isFile && it.length() > 0 }
             },
             cacheLimitBytes = { effectiveCacheLimitBytes() },
+            imageHosts = { apiClient.imageHosts() },
         )
     }
     val comics: ComicRepository by lazy {

@@ -26,6 +26,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
@@ -259,19 +261,13 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
                         )
                     }
                 val ordered = images.sortedBy { abs(it.index - safePage) }
-                ordered.firstOrNull()?.let { image ->
-                    try {
-                        AppGraph.pageStore.prepare(image, PagePriority.Warmup)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                        // The reader will fetch it on demand.
-                    }
-                }
-                for (batch in ordered.drop(1).chunked(PREFETCH_CONCURRENCY)) {
-                    coroutineScope {
-                        batch.forEach { image ->
-                            launch {
+                // Warm the whole window in one parallel wave; the current page is first in line but
+                // no longer blocks the rest behind a full page transfer.
+                coroutineScope {
+                    val slots = Semaphore(PREFETCH_CONCURRENCY)
+                    ordered.forEach { image ->
+                        launch {
+                            slots.withPermit {
                                 try {
                                     AppGraph.pageStore.prepare(image, PagePriority.Warmup)
                                 } catch (e: CancellationException) {
@@ -291,6 +287,6 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
 
     private companion object {
         const val PREFETCH_AHEAD = 4
-        const val PREFETCH_CONCURRENCY = 2
+        const val PREFETCH_CONCURRENCY = 4
     }
 }

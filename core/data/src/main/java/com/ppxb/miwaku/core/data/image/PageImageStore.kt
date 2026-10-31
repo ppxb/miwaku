@@ -79,6 +79,8 @@ class PageImageStore(
     private val alternateImageHost: suspend (String?) -> String? = { null },
     private val localFile: (PageImage) -> File? = { null },
     private val cacheLimitBytes: () -> Long = { DEFAULT_CACHE_LIMIT_BYTES },
+    /** Healthy image CDNs; transfers are spread across them instead of all hitting one host. */
+    private val imageHosts: () -> List<String> = { emptyList() },
     // Transfer budgets are constructor parameters so a benchmark can compare configurations; the
     // defaults are the shipped values.
     private val readerTransfers: Int = READER_TRANSFERS,
@@ -98,6 +100,7 @@ class PageImageStore(
     @Volatile private var admissionPaused: CompletableDeferred<Unit>? = null
     private val trimming = AtomicBoolean(false)
     private val downloadsSinceTrim = AtomicInteger(0)
+    private val spreadIndex = AtomicInteger(0)
     private val sizeKeys = LinkedHashSet<String>()
     private val sizeLock = Any()
     private val _sizes = MutableStateFlow<Map<String, PageSize>>(emptyMap())
@@ -412,17 +415,18 @@ class PageImageStore(
     private suspend fun download(image: PageImage, flight: Flight, target: File): File {
         val started = ReaderPerf.mark()
         target.parentFile?.mkdirs()
+        val primaryUrl = spreadUrl(image.url)
         val temp = File.createTempFile("${target.name}.", ".tmp", target.parentFile)
         try {
             try {
-                fetchTo(image.url, temp, flight)
+                fetchTo(primaryUrl, temp, flight)
             } catch (e: Exception) {
                 currentCoroutineContext().ensureActive()
                 // Cancellation is not a host problem: the caller is gone, so do not rotate.
                 if (!e.canRotateImageHost()) throw e
                 val retryUrl = alternateUrl(image) ?: throw e
                 ReaderPerf.log {
-                    "image_host_retry key=${image.cacheKey} from=${image.url.toHttpUrlOrNull()?.host} to=${retryUrl.toHttpUrlOrNull()?.host}"
+                    "image_host_retry key=${image.cacheKey} from=${primaryUrl.toHttpUrlOrNull()?.host} to=${retryUrl.toHttpUrlOrNull()?.host}"
                 }
                 fetchTo(retryUrl, temp, flight)
             }
@@ -445,7 +449,7 @@ class PageImageStore(
                         readyFiles[image.cacheKey] = target
                         recordSize(image, size, refresh = true)
                         ReaderPerf.log {
-                            "page_downloaded key=${image.cacheKey} ms=${ReaderPerf.mark() - started} bytes=${target.length()}"
+                            "page_downloaded key=${image.cacheKey} host=${primaryUrl.toHttpUrlOrNull()?.host} ms=${ReaderPerf.mark() - started} bytes=${target.length()}"
                         }
                         return target
                     }
@@ -455,7 +459,7 @@ class PageImageStore(
                 recordSize(image, size, refresh = true)
             }
             ReaderPerf.log {
-                "page_downloaded key=${image.cacheKey} ms=${ReaderPerf.mark() - started} bytes=${target.length()}"
+                "page_downloaded key=${image.cacheKey} host=${primaryUrl.toHttpUrlOrNull()?.host} ms=${ReaderPerf.mark() - started} bytes=${target.length()}"
             }
             maybeTrim()
             return target
@@ -516,6 +520,19 @@ class PageImageStore(
                 throw ApiFailure.Network(e.message ?: "image read failed", e)
             }
         }
+    }
+
+    /**
+     * Round-robins the transfer across the image pool: every host serves the same origin, so only
+     * the authority changes and the content-based cache key stays valid.
+     */
+    private fun spreadUrl(url: String): String {
+        val hosts = imageHosts().map { it.trim().trimEnd('/') }.filter { it.isNotEmpty() }
+        if (hosts.size <= 1) return url
+        val source = url.toHttpUrlOrNull() ?: return url
+        val index = (spreadIndex.getAndIncrement() and Int.MAX_VALUE) % hosts.size
+        val target = hosts[index].toHttpUrlOrNull() ?: return url
+        return source.newBuilder().scheme(target.scheme).host(target.host).port(target.port).build().toString()
     }
 
     private suspend fun alternateUrl(image: PageImage): String? {
@@ -786,9 +803,9 @@ class PageImageStore(
     private companion object {
         const val CACHE_DIR = "reader_pages"
         const val CACHE_VERSION = 1
-        const val READER_TRANSFERS = 4
+        const val READER_TRANSFERS = 6
         const val DOWNLOAD_TRANSFERS = 2
-        const val TOTAL_TRANSFERS = 6
+        const val TOTAL_TRANSFERS = 8
         const val MAX_IMAGE_BYTES = 64L * 1024 * 1024
         const val IMAGE_CALL_TIMEOUT_MS = 60_000L
         const val DEFAULT_CACHE_LIMIT_BYTES = 1024L * 1024 * 1024
