@@ -101,6 +101,8 @@ fun SettingsScreen(
     onCacheLimitMbChange: (Int) -> Unit,
     downloadConcurrency: Int,
     onDownloadConcurrencyChange: (Int) -> Unit,
+    downloadChapterConcurrency: Int,
+    onDownloadChapterConcurrencyChange: (Int) -> Unit,
     wifiOnlyDownloads: Boolean,
     onWifiOnlyDownloadsChange: (Boolean) -> Unit,
     downloadLimitMb: Int,
@@ -114,6 +116,7 @@ fun SettingsScreen(
     var showCacheLimitDialog by rememberSaveable { mutableStateOf(false) }
     var showClearCacheDialog by rememberSaveable { mutableStateOf(false) }
     var showDownloadConcurrencyDialog by rememberSaveable { mutableStateOf(false) }
+    var showDownloadChapterDialog by rememberSaveable { mutableStateOf(false) }
     var showDownloadLimitDialog by rememberSaveable { mutableStateOf(false) }
     var showNetworkStatsDialog by rememberSaveable { mutableStateOf(false) }
     var showEndpointDialog by rememberSaveable { mutableStateOf(false) }
@@ -260,6 +263,15 @@ fun SettingsScreen(
                                         downloadConcurrency,
                                     ),
                                 onClick = { showDownloadConcurrencyDialog = true },
+                            )
+                            SettingItem(
+                                title = stringResource(R.string.settings_download_chapter_concurrency),
+                                subtitle =
+                                    stringResource(
+                                        R.string.settings_download_chapter_concurrency_summary,
+                                        downloadChapterConcurrency,
+                                    ),
+                                onClick = { showDownloadChapterDialog = true },
                             )
                             SettingItem(
                                 title = stringResource(R.string.settings_wifi_only_downloads),
@@ -462,6 +474,16 @@ fun SettingsScreen(
             onDismiss = { showDownloadConcurrencyDialog = false },
         )
     }
+    if (showDownloadChapterDialog) {
+        DownloadChapterDialog(
+            current = downloadChapterConcurrency,
+            onSelect = {
+                onDownloadChapterConcurrencyChange(it)
+                showDownloadChapterDialog = false
+            },
+            onDismiss = { showDownloadChapterDialog = false },
+        )
+    }
     if (showDownloadLimitDialog) {
         DownloadLimitDialog(
             current = downloadLimitMb,
@@ -495,9 +517,10 @@ private fun ThemeMode.labelRes(): Int =
         ThemeMode.Dark -> R.string.settings_theme_dark
     }
 
-private val PrefetchOptions = listOf(3, 6, 10)
+private val PrefetchOptions = listOf(4, 6, 8, 10, 12, 16, 20)
 private val CacheLimitOptions = listOf(512, 1024, 2048)
 private val DownloadConcurrencyOptions = listOf(1, 2, 3, 5)
+private val DownloadChapterOptions = listOf(1, 2, 3, 4, 5)
 private val DownloadLimitOptions = listOf(0, 2048, 4096, 8192, 16384)
 private const val LOW_MEMORY_CACHE_LIMIT_MB = 256
 
@@ -575,6 +598,49 @@ private fun CacheLimitDialog(
                         Spacer(Modifier.width(12.dp))
                         Text(
                             text = cacheLimitLabel(mb),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        },
+    )
+}
+
+@Composable
+private fun DownloadChapterDialog(
+    current: Int,
+    onSelect: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.settings_download_chapter_concurrency)) },
+        text = {
+            Column {
+                DownloadChapterOptions.forEach { value ->
+                    Row(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .selectable(
+                                    selected = value == current,
+                                    role = Role.RadioButton,
+                                    onClick = { onSelect(value) },
+                                ).padding(horizontal = 8.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = value == current, onClick = null)
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            text = stringResource(R.string.settings_download_chapter_concurrency_option, value),
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurface,
                         )

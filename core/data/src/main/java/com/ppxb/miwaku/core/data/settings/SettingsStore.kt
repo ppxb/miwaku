@@ -54,6 +54,9 @@ class SettingsStore(context: Context) {
     private val _downloadPageConcurrency = MutableStateFlow(readDownloadConcurrency())
     val downloadPageConcurrency: StateFlow<Int> = _downloadPageConcurrency.asStateFlow()
 
+    private val _downloadChapterConcurrency = MutableStateFlow(readDownloadChapterConcurrency())
+    val downloadChapterConcurrency: StateFlow<Int> = _downloadChapterConcurrency.asStateFlow()
+
     private val _wifiOnlyDownloads = MutableStateFlow(prefs.getBoolean(KEY_WIFI_ONLY_DOWNLOADS, false))
     val wifiOnlyDownloads: StateFlow<Boolean> = _wifiOnlyDownloads.asStateFlow()
 
@@ -128,6 +131,12 @@ class SettingsStore(context: Context) {
         prefs.edit { putInt(KEY_DOWNLOAD_CONCURRENCY, safe) }
     }
 
+    fun setDownloadChapterConcurrency(value: Int) {
+        val safe = value.coerceIn(MIN_DOWNLOAD_CHAPTER_CONCURRENCY, MAX_DOWNLOAD_CHAPTER_CONCURRENCY)
+        _downloadChapterConcurrency.value = safe
+        prefs.edit { putInt(KEY_DOWNLOAD_CHAPTER_CONCURRENCY, safe) }
+    }
+
     fun setWifiOnlyDownloads(enabled: Boolean) {
         _wifiOnlyDownloads.value = enabled
         prefs.edit { putBoolean(KEY_WIFI_ONLY_DOWNLOADS, enabled) }
@@ -171,6 +180,10 @@ class SettingsStore(context: Context) {
         prefs.getInt(KEY_DOWNLOAD_CONCURRENCY, DEFAULT_DOWNLOAD_CONCURRENCY)
             .coerceIn(MIN_DOWNLOAD_CONCURRENCY, MAX_DOWNLOAD_CONCURRENCY)
 
+    private fun readDownloadChapterConcurrency(): Int =
+        prefs.getInt(KEY_DOWNLOAD_CHAPTER_CONCURRENCY, DEFAULT_DOWNLOAD_CHAPTER_CONCURRENCY)
+            .coerceIn(MIN_DOWNLOAD_CHAPTER_CONCURRENCY, MAX_DOWNLOAD_CHAPTER_CONCURRENCY)
+
     private fun readDownloadLimitMb(): Int =
         prefs.getInt(KEY_DOWNLOAD_LIMIT_MB, DEFAULT_DOWNLOAD_LIMIT_MB)
             .coerceIn(MIN_DOWNLOAD_LIMIT_MB, MAX_DOWNLOAD_LIMIT_MB)
@@ -189,17 +202,21 @@ class SettingsStore(context: Context) {
         const val KEY_READER_DEFAULT_MODE = "reader_default_mode"
         const val KEY_PAGE_LAYOUT = "reader_page_layout"
         const val KEY_DOWNLOAD_CONCURRENCY = "download_page_concurrency"
+        const val KEY_DOWNLOAD_CHAPTER_CONCURRENCY = "download_chapter_concurrency"
         const val KEY_WIFI_ONLY_DOWNLOADS = "wifi_only_downloads"
         const val KEY_DOWNLOAD_LIMIT_MB = "download_limit_mb"
-        const val DEFAULT_DOWNLOAD_CONCURRENCY = 3
+        const val DEFAULT_DOWNLOAD_CONCURRENCY = 5
         const val MIN_DOWNLOAD_CONCURRENCY = 1
         const val MAX_DOWNLOAD_CONCURRENCY = 5
+        const val DEFAULT_DOWNLOAD_CHAPTER_CONCURRENCY = 3
+        const val MIN_DOWNLOAD_CHAPTER_CONCURRENCY = 1
+        const val MAX_DOWNLOAD_CHAPTER_CONCURRENCY = 5
         const val DEFAULT_DOWNLOAD_LIMIT_MB = 0
         const val MIN_DOWNLOAD_LIMIT_MB = 0
         const val MAX_DOWNLOAD_LIMIT_MB = 16384
-        const val DEFAULT_PREFETCH_AHEAD = 6
-        const val MIN_PREFETCH_AHEAD = 3
-        const val MAX_PREFETCH_AHEAD = 10
+        const val DEFAULT_PREFETCH_AHEAD = 10
+        const val MIN_PREFETCH_AHEAD = 4
+        const val MAX_PREFETCH_AHEAD = 20
         const val DEFAULT_CACHE_LIMIT_MB = 1024
         const val MIN_CACHE_LIMIT_MB = 512
         const val MAX_CACHE_LIMIT_MB = 2048

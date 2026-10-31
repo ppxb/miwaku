@@ -40,8 +40,8 @@ class DownloadManager(
     val waitingForWifi = _waitingForWifi.asStateFlow()
     private val _error = MutableStateFlow<String?>(null)
     val error = _error.asStateFlow()
-    @Volatile private var activeJob: Job? = null
-    @Volatile private var activeChapter: String? = null
+    /** One entry per running chapter; [chapterConcurrency] workers pull from the same queue. */
+    private val activeJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
 
     init {
         scope.launch {
@@ -80,12 +80,12 @@ class DownloadManager(
     fun pauseAll() {
         _paused.value = true
         store.setPaused(true)
-        activeJob?.cancel()
+        activeJobs.values.forEach { it.cancel() }
     }
 
     fun resumeAll() {
         command {
-            if (activeJob?.isActive != true) store.recoverRunning()
+            if (activeJobs.isEmpty()) store.recoverRunning()
             _paused.value = false
             store.setPaused(false)
             wake.trySend(Unit)
@@ -95,14 +95,14 @@ class DownloadManager(
     fun onNetworkAvailable() {
         if (!networkAllowed()) {
             _waitingForWifi.value = true
-            activeJob?.cancel()
+            activeJobs.values.forEach { it.cancel() }
         }
         wake.trySend(Unit)
     }
 
     fun cancel(chapterId: String) = command {
         if (store.state(chapterId) !in listOf(DownloadState.Queued, DownloadState.Running)) return@command
-        if (activeChapter == chapterId) activeJob?.cancelAndJoin()
+        activeJobs[chapterId]?.cancelAndJoin()
         store.deleteChapter(chapterId)
         wake.trySend(Unit)
     }
@@ -131,31 +131,42 @@ class DownloadManager(
         commands.trySend(action)
     }
 
-    private suspend fun runQueue() {
-        while (true) {
-            val job = control.withLock {
-                if (_paused.value) return
-                if (!networkAllowed()) { _waitingForWifi.value = true; return }
-                _waitingForWifi.value = false
-                val task = store.nextQueued() ?: return
-                activeChapter = task.chapterId
-                scope.async(start = CoroutineStart.LAZY) { download(task) }.also {
-                    activeJob = it
-                    it.start()
+    /**
+     * Runs [settings.downloadChapterConcurrency] workers over the same persistent queue. The task is
+     * marked Running while still under [control], so two workers can never pick the same chapter.
+     */
+    private suspend fun runQueue() = coroutineScope {
+        val workers = settings.downloadChapterConcurrency.value.coerceIn(1, 5)
+        repeat(workers) {
+            launch {
+                while (isActive) {
+                    val task = control.withLock {
+                        if (_paused.value) return@launch
+                        if (!networkAllowed()) { _waitingForWifi.value = true; return@launch }
+                        _waitingForWifi.value = false
+                        val next = store.nextQueued() ?: return@launch
+                        store.update(next.chapterId, DownloadState.Running)
+                        next
+                    }
+                    val job = launch { download(task) }
+                    activeJobs[task.chapterId] = job
+                    try {
+                        job.join()
+                    } finally {
+                        activeJobs.remove(task.chapterId, job)
+                    }
                 }
-            }
-            try { job.await() }
-            catch (cancel: CancellationException) { currentCoroutineContext().ensureActive() }
-            finally {
-                control.withLock { if (activeJob === job) { activeJob = null; activeChapter = null } }
             }
         }
     }
 
     private suspend fun download(task: DownloadTask) {
         try {
-            if (_paused.value || !networkAllowed()) return
-            store.update(task.chapterId, DownloadState.Running)
+            if (_paused.value || !networkAllowed()) {
+                // The worker claimed the chapter to avoid double-picking; hand it back to the queue.
+                store.update(task.chapterId, DownloadState.Queued)
+                return
+            }
             val content = comics.chapter(task.albumId, task.chapterId)
             if (content.pages.isEmpty()) throw IOException("empty chapter")
             store.update(task.chapterId, totalPages = content.pages.size)

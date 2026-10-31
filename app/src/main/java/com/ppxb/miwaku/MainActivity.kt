@@ -80,6 +80,7 @@ class MainActivity : ComponentActivity() {
             val lowMemory by settings.lowMemory.collectAsState()
             val cacheLimitMb by settings.readerCacheLimitMb.collectAsState()
             val downloadConcurrency by settings.downloadPageConcurrency.collectAsState()
+            val downloadChapterConcurrency by settings.downloadChapterConcurrency.collectAsState()
             val wifiOnlyDownloads by settings.wifiOnlyDownloads.collectAsState()
             val downloadLimitMb by settings.downloadLimitMb.collectAsState()
             val keepScreenOn by settings.keepScreenOn.collectAsState()
@@ -108,6 +109,8 @@ class MainActivity : ComponentActivity() {
                     onCacheLimitMbChange = settings::setReaderCacheLimitMb,
                     downloadConcurrency = downloadConcurrency,
                     onDownloadConcurrencyChange = settings::setDownloadPageConcurrency,
+                    downloadChapterConcurrency = downloadChapterConcurrency,
+                    onDownloadChapterConcurrencyChange = settings::setDownloadChapterConcurrency,
                     wifiOnlyDownloads = wifiOnlyDownloads,
                     onWifiOnlyDownloadsChange = settings::setWifiOnlyDownloads,
                     downloadLimitMb = downloadLimitMb,

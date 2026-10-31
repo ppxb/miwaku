@@ -78,10 +78,17 @@ class PageImageStore(
     private val alternateImageHost: suspend (String?) -> String? = { null },
     private val localFile: (PageImage) -> File? = { null },
     private val cacheLimitBytes: () -> Long = { DEFAULT_CACHE_LIMIT_BYTES },
+    // Transfer budgets are constructor parameters so a benchmark can compare configurations; the
+    // defaults are the shipped values.
+    private val readerTransfers: Int = READER_TRANSFERS,
+    private val downloadTransfers: Int = DOWNLOAD_TRANSFERS,
+    private val totalTransfers: Int = TOTAL_TRANSFERS,
 ) {
     private val cacheRoot = File(context.cacheDir, "$CACHE_DIR/v$CACHE_VERSION")
     private val sizeSnapshot = File(cacheRoot, SIZE_SNAPSHOT_NAME)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var runningTransfers = 0
+    private var runningReaders = 0
     private var runningDownloads = 0
     private val inFlight = HashMap<String, Flight>()
     private val readyFiles = ConcurrentHashMap<String, File>()
@@ -212,14 +219,26 @@ class PageImageStore(
             }
         }
 
-    /** Invoked only under flightsLock; I/O starts on the store's IO scope. */
+    /**
+     * Invoked only under flightsLock; I/O starts on the store's IO scope. Reader transfers and
+     * download transfers have separate budgets so a running download can never starve a page turn,
+     * while [TOTAL_TRANSFERS] keeps the CDN load bounded.
+     */
     private fun pumpLocked() {
         if (admissionPaused != null) return
-        while (runningDownloads < MAX_CONCURRENT_DOWNLOADS) {
-            val next = inFlight.values.filter { !it.closing && it.job == null && it.owners.isNotEmpty() }
-                .minWithOrNull(compareBy<Flight> { it.owners.values.minOf { priority -> priority.ordinal } }
-                    .thenBy { it.created }) ?: return
-            runningDownloads++
+        while (runningTransfers < totalTransfers) {
+            val next = inFlight.values
+                .filter { !it.closing && it.job == null && it.owners.isNotEmpty() }
+                .sortedWith(
+                    compareBy<Flight> { it.owners.values.minOf { priority -> priority.ordinal } }
+                        .thenBy { it.created },
+                )
+                .firstOrNull { flight ->
+                    if (flight.isDownloadFlight()) runningDownloads < downloadTransfers else runningReaders < readerTransfers
+                } ?: return
+            val downloadFlight = next.isDownloadFlight()
+            runningTransfers++
+            if (downloadFlight) runningDownloads++ else runningReaders++
             next.job = scope.launch(start = CoroutineStart.LAZY) {
                 try {
                     // Another flight may have committed between the caller's cache check and admission.
@@ -237,7 +256,8 @@ class PageImageStore(
                 if (!next.result.isCompleted) next.result.completeExceptionally(error ?: CancellationException("request closed"))
                     synchronized(flightsLock) {
                         if (inFlight[next.image.cacheKey] === next) inFlight.remove(next.image.cacheKey)
-                        runningDownloads--
+                        runningTransfers--
+                        if (downloadFlight) runningDownloads-- else runningReaders--
                         next.finished.complete(Unit)
                         pumpLocked()
                     }
@@ -277,6 +297,9 @@ class PageImageStore(
         var job: Job? = null
         var call: Call? = null
         @Volatile var closing = false
+
+        /** A flight that any offline download waits on consumes the download budget. */
+        fun isDownloadFlight(): Boolean = owners.values.any { it == PagePriority.Download }
     }
 
     suspend fun loadCachedSizes(images: List<PageImage>) =
@@ -697,7 +720,9 @@ class PageImageStore(
     private companion object {
         const val CACHE_DIR = "reader_pages"
         const val CACHE_VERSION = 1
-        const val MAX_CONCURRENT_DOWNLOADS = 3
+        const val READER_TRANSFERS = 4
+        const val DOWNLOAD_TRANSFERS = 2
+        const val TOTAL_TRANSFERS = 6
         const val MAX_IMAGE_BYTES = 64L * 1024 * 1024
         const val IMAGE_CALL_TIMEOUT_MS = 60_000L
         const val DEFAULT_CACHE_LIMIT_BYTES = 1024L * 1024 * 1024

@@ -124,6 +124,9 @@
     <string name="settings_download_concurrency">同时下载图片数</string>
     <string name="settings_download_concurrency_summary">每章 %1$d 张并发</string>
     <string name="settings_download_concurrency_option">%1$d 张</string>
+    <string name="settings_download_chapter_concurrency">同时下载章节数</string>
+    <string name="settings_download_chapter_concurrency_summary">同时 %1$d 章，每章按图片并发下载</string>
+    <string name="settings_download_chapter_concurrency_option">%1$d 章</string>
     <string name="settings_download_limit">下载存储上限</string>
     <string name="settings_download_limit_summary">已用 %1$s / %2$s · 超出后自动清理最旧章节</string>
     <string name="settings_download_limit_no_limit">已用 %1$s · 已下载章节会一直保留</string>

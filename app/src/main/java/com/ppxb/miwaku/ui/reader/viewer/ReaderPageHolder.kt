@@ -29,6 +29,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImagePainter
 import coil3.compose.rememberAsyncImagePainter
 import coil3.request.ImageRequest
+import com.ppxb.miwaku.MiwakuApplication
 import com.ppxb.miwaku.R
 import com.ppxb.miwaku.core.data.image.ReaderPerf
 import com.ppxb.miwaku.reader.image.PageImageRequests
@@ -151,7 +152,10 @@ private fun PageArtwork(
                 attempt = attempt,
             )
         }
-    val painter = rememberAsyncImagePainter(model = request)
+    // Pages decode on their own loader (3 decoders); covers stay on the singleton (4 decoders), so a
+    // tall page never blocks a cover decode.
+    val pageLoader = (context.applicationContext as MiwakuApplication).pageImageLoader
+    val painter = rememberAsyncImagePainter(model = request, imageLoader = pageLoader)
     val state by painter.state.collectAsStateWithLifecycle()
     var showSpinner by remember(request) { mutableStateOf(false) }
     val started = remember(request) { ReaderPerf.mark() }
