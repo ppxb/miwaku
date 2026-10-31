@@ -56,14 +56,6 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
     private val _operationError = MutableStateFlow<String?>(null)
     val operationError = _operationError.asStateFlow()
 
-    fun markRead(chapter: ChapterSummary, read: Boolean) {
-        viewModelScope.launch {
-            try { AppGraph.progress.markRead(chapter.id, read); _operationError.value = null }
-            catch (cancel: CancellationException) { throw cancel }
-            catch (_: Exception) { _operationError.value = "阅读状态保存失败，请重试" }
-        }
-    }
-
     val downloadTasks: StateFlow<Map<String, DownloadTask>> =
         combine(AppGraph.downloadManager.tasks, state) { tasks, ui ->
             val albumId = (ui as? DetailUiState.Content)?.detail?.id ?: id

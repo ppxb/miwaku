@@ -794,11 +794,8 @@ private fun ChapterTrack(
     downloaded: Boolean,
     progress: ChapterProgress?,
     onClick: () -> Unit,
-    onStart: () -> Unit,
-    onMarkRead: () -> Unit,
     onDownload: () -> Unit,
 ) {
-    var showActions by remember { mutableStateOf(false) }
     Row(
         modifier =
             Modifier
@@ -816,15 +813,6 @@ private fun ChapterTrack(
                 else -> "未读"
             }, style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.6f))
         }
-        Box {
-            TextButton(onClick = { showActions = true }) { Text("操作") }
-            androidx.compose.material3.DropdownMenu(expanded = showActions, onDismissRequest = { showActions = false }) {
-                androidx.compose.material3.DropdownMenuItem(text = { Text(if (progress?.isRead == true) "标记为未读" else "标记为已读") },
-                    onClick = { showActions = false; onMarkRead() })
-                androidx.compose.material3.DropdownMenuItem(text = { Text("从头阅读") }, onClick = { showActions = false; onStart() })
-            }
-        }
-        Spacer(Modifier.width(8.dp))
         ChapterDownloadControl(
             task = task,
             downloaded = downloaded,
