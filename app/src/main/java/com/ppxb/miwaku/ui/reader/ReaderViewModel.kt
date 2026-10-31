@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ppxb.miwaku.core.data.AppGraph
 import com.ppxb.miwaku.core.data.image.PageImage
+import com.ppxb.miwaku.core.data.image.PagePriority
 import com.ppxb.miwaku.core.data.image.PageSize
 import com.ppxb.miwaku.core.data.image.ReaderPerf
 import com.ppxb.miwaku.core.data.settings.PageLayoutMode
@@ -248,9 +249,10 @@ internal class ReaderViewModel(
         force: Boolean,
     ): PageSource? {
         if (force) withContext(Dispatchers.IO) { AppGraph.pageStore.invalidate(page.image) }
+        val priority = if (force) PagePriority.Retry else PagePriority.Visible
         val file =
             try {
-                AppGraph.pageStore.prepare(page.image)
+                AppGraph.pageStore.prepare(page.image, priority)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

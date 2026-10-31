@@ -57,7 +57,7 @@
 | 落盘内容 | 原图（解扰在解码时） | 原图（解码时解扰） | 已解扰图（可再 WebP/超分） | 原图 |
 | 去重 | 单飞 flight + owner 计数 | Coil single-flight | 单飞（asset store） | KeyedLock + 锁内复查 |
 | 并发 | 阅读 4 / 下载 2 / 总 6 传输；页解码 3、封面解码 4（分 loader）；预取窗口 10 页、批内 3 并发 | 读者线程 2，fetcher 8 / decoder 3 | 5（可被插件声明） | 网络 12 / 解码 4，双预算 |
-| 优先级 | Visible/Nearby/Behind/Warmup/Download | 三级（当前页/预取/重试） | 无（顺序预热） | 三级 |
+| 优先级 | Retry / Visible / Nearby / Behind / Warmup / Download 六档，全部实际使用：重试最高、可见页其次、身后页低于前方、下载最低 | 三级（当前页 / 预取 / 重试，重试最高） | 无（顺序预热） | 三级 |
 | 取消 | 最后一个使用者退出才取消 Call | 随 composable 销毁 | 取消信号 | watch + select，取消不换图床 |
 | 完整性校验 | magic 判格式 + **JPEG EOI / PNG IEND / GIF 3B / WebP RIFF 长度**，不合格按可重试网络错误在提交前拒绝 | — | — | magic 判格式 + EOI/IEND + 读时自愈 |
 | 尺寸缓存 | **二进制快照落盘**（`sizes.bin` v1，2s 防抖写，启动即恢复） | Coil 内存 | zstd 二进制落盘 | — |
@@ -70,7 +70,7 @@
 | | miwaku | komikku | Breeze |
 |---|---|---|---|
 | 结构 | 1 个 1650 行 Screen + 357 行 VM | `ui/reader/**` 多文件 + `PageLoader` 抽象 | 8 个 controller + cubit |
-| 预取 | 需求集 + 优先级 + 末位取消，ahead 6 / behind 2 | 优先级队列，preload 10 | key 去重预热，不建 Widget |
+| 预取 | 需求集 + 优先级 + 末位取消，ahead 10（可配 4–20）/ behind 2；可见页单独 await，后方页降为 Behind | 优先级队列，preload 10 | key 去重预热，不建 Widget |
 | 进度写 | 1s 合并 + 跨章/退后台立即提交 | 每翻页同步写 | 500ms 定时写（不做差异判断） |
 | 已读判定 | 末页成功显示才置位 | 到末页置位 | 宿主负责 |
 | 跨章 | 窗口内邻章 + 过渡页 | 切章重建 | 无缝跨章 + 双页 + 音量键 + 自动阅读 |
@@ -256,9 +256,10 @@
 | 分离解码器 | `MiwakuApplication` | 页面 loader（decoder 3）与封面 loader（decoder 4）分开，共享同一 MemoryCache/DiskCache；阅读页不再拖慢封面 |
 | 并发可配 | `SettingsStore`、`SettingsScreen`、`DownloadManager` | 预取 4–20（默认 10）、下载章并行 1–5（默认 3）、下载页并发默认 5；worker pool 从同一队列取任务，认领时先标记 Running 防重复 |
 | 并发基准 | `PagePipelineBenchmarkTest`（设备，真网络 8 页） | 传输 3/2/5、4/2/6、6/3/9 两轮：首屏 2.2–12.0s、整批 5.8–18.1s 抖动巨大，只能确认高并发**无系统性失败**（0–1）；解码 5 轮均值 29/16/15ms（并发 1/2/3），2→3 仅再快 ~6%，PSS 采样受 GC 干扰不可比 |
+| 优先级补全 | `PagePriority`、`ReaderViewModel`、`ReaderPrefetcher` | 新增 `Retry` 档；可见页 = Visible、前方 = Nearby、后方 = Behind；`loadPage(force = true)` 走 Retry。此前生产代码只用 Nearby，Visible / Behind 仅测试可见 |
 | 测试 | `EndpointHealthTest`、`EndpointStateTest`、`EndpointJsonTest`、`EndpointPoolE2ETest`、`ApiFailureTest`、`UserAgentTest`、`RequestHeadersTest`、`ImageFailoverTest`、`EndpointStateStoreTest`、`ImageIntegrityTest`、`PageImageStoreDeviceTest`、`SingleFlightTest` | JVM 32 例 + 设备 42 例全绿（`CodecHostListTest` 随正则兜底一并删除，host 配置解析改由设备侧 `EndpointJsonTest` 覆盖） |
 
-验证：`:app:lintDebug`、`:app:testDebugUnitTest`、`:core:network:testDebugUnitTest`、`:core:database:testDebugUnitTest` 全部通过；设备侧 `TEST-SM-A5360.xml` 记录 33/33 通过（AGP 任务本身仍报 exit code 1，见下）。兜底二级探测与图床静态兜底改动后各重跑一次 `:core:network:testDebugUnitTest`，编译 + 单测均通过；探测传输拆分后 `:core:network:testDebugUnitTest`、`:app:compileDebugAndroidTestKotlin` 通过，模拟器 `emulator-5554` 上 `EndpointPoolE2ETest` 3/3 通过；403 归类改动后 `:core:network:testDebugUnitTest` 25 例全绿（含新增 `ApiFailureTest` 4 例）；图床探测超时改 5s 后真机测 4 台 × 2 轮全 200 且均 < 5s；请求头收敛 + UA 持久随机后 `:core:network:testDebugUnitTest` 33 例全绿，真机 `UserAgentDeviceTest` 通过（UA 跨实例稳定、`cdnhjk`/`cdnutc` 的 `/setting` 均 200）；图床非阻塞 + 30s 预算 + 端点状态页后 `:core:network:testDebugUnitTest` 34 例全绿、设备 `EndpointPoolE2ETest` 4/4 通过、`FailoverBudgetDeviceTest` 实测 30.0s 收敛（临时用例已回收），模拟器上端点状态页实测有数据（当前线路 1179 ms、3 条线路、2 台图床）；探测记录 v3 后 `EndpointStateStoreTest` 2/2、`EndpointPoolE2ETest` 4/4、`EndpointJsonTest` 2/2 通过，模拟器实测 4 条线路全列出、`cdnhjk.net` 灰色「探测失败」、`cdngwc.club` 显示「探测降级 · 当前」、`cdngwc.net` 显示运行期「降权 ×1」；信封统一 + JSON-only 解析 + 非 2xx 文案后 `:core:network:testDebugUnitTest` 28 例全绿、设备 `EndpointJsonTest` 4/4 通过（含 `hostConfigIsJsonParsedAndNormalized`、`nonSuccessResponseKeepsTheServerMessage`；AGP 任务仍报 exit 1，按 XML 判定）；图片管线 A3/A4/B4 后 `:core:data:testDebugUnitTest` 4 例（`ImageIntegrityTest`）、`:core:network:testDebugUnitTest` 28 例全绿，设备 `PageImageStoreDeviceTest` 3/3 通过（直写目标、缓存副本不存在、尺寸快照跨实例恢复、截断体被拒；XML/HTML 均 100%，AGP 仍报 exit 1）；请求级单飞后 `:core:network:testDebugUnitTest` 32 例全绿（含 `SingleFlightTest` 4 例）、设备 `EndpointJsonTest` 5/5 通过（4 并发 `/album` 只发 1 次 HTTP）；并发改造（分离传输池 / 分拆 ImageLoader / 三项可配）后 `:core:network` 32 例、`:core:data` 4 例全绿，模拟器装机实测设置页显示「向前 10 页」「每章 5 张并发」「同时 3 章」。
+验证：`:app:lintDebug`、`:app:testDebugUnitTest`、`:core:network:testDebugUnitTest`、`:core:database:testDebugUnitTest` 全部通过；设备侧 `TEST-SM-A5360.xml` 记录 33/33 通过（AGP 任务本身仍报 exit code 1，见下）。兜底二级探测与图床静态兜底改动后各重跑一次 `:core:network:testDebugUnitTest`，编译 + 单测均通过；探测传输拆分后 `:core:network:testDebugUnitTest`、`:app:compileDebugAndroidTestKotlin` 通过，模拟器 `emulator-5554` 上 `EndpointPoolE2ETest` 3/3 通过；403 归类改动后 `:core:network:testDebugUnitTest` 25 例全绿（含新增 `ApiFailureTest` 4 例）；图床探测超时改 5s 后真机测 4 台 × 2 轮全 200 且均 < 5s；请求头收敛 + UA 持久随机后 `:core:network:testDebugUnitTest` 33 例全绿，真机 `UserAgentDeviceTest` 通过（UA 跨实例稳定、`cdnhjk`/`cdnutc` 的 `/setting` 均 200）；图床非阻塞 + 30s 预算 + 端点状态页后 `:core:network:testDebugUnitTest` 34 例全绿、设备 `EndpointPoolE2ETest` 4/4 通过、`FailoverBudgetDeviceTest` 实测 30.0s 收敛（临时用例已回收），模拟器上端点状态页实测有数据（当前线路 1179 ms、3 条线路、2 台图床）；探测记录 v3 后 `EndpointStateStoreTest` 2/2、`EndpointPoolE2ETest` 4/4、`EndpointJsonTest` 2/2 通过，模拟器实测 4 条线路全列出、`cdnhjk.net` 灰色「探测失败」、`cdngwc.club` 显示「探测降级 · 当前」、`cdngwc.net` 显示运行期「降权 ×1」；信封统一 + JSON-only 解析 + 非 2xx 文案后 `:core:network:testDebugUnitTest` 28 例全绿、设备 `EndpointJsonTest` 4/4 通过（含 `hostConfigIsJsonParsedAndNormalized`、`nonSuccessResponseKeepsTheServerMessage`；AGP 任务仍报 exit 1，按 XML 判定）；图片管线 A3/A4/B4 后 `:core:data:testDebugUnitTest` 4 例（`ImageIntegrityTest`）、`:core:network:testDebugUnitTest` 28 例全绿，设备 `PageImageStoreDeviceTest` 3/3 通过（直写目标、缓存副本不存在、尺寸快照跨实例恢复、截断体被拒；XML/HTML 均 100%，AGP 仍报 exit 1）；请求级单飞后 `:core:network:testDebugUnitTest` 32 例全绿（含 `SingleFlightTest` 4 例）、设备 `EndpointJsonTest` 5/5 通过（4 并发 `/album` 只发 1 次 HTTP）；并发改造（分离传输池 / 分拆 ImageLoader / 三项可配）后 `:core:network` 32 例、`:core:data` 4 例全绿，模拟器装机实测设置页显示「向前 10 页」「每章 5 张并发」「同时 3 章」；优先级补全后设备 `ImagePipelineTest` 4/4 通过（含「Visible 提升越过 Nearby」用例），模拟器阅读 1/149 正常。
 
 ### 域名来源实测（2026-10-30，直连 4 轮 + 系统代理 2 轮）
 

@@ -2,6 +2,7 @@ package com.ppxb.miwaku.ui.reader
 
 import com.ppxb.miwaku.core.data.image.PageImage
 import com.ppxb.miwaku.core.data.image.PageImageStore
+import com.ppxb.miwaku.core.data.image.PagePriority
 import com.ppxb.miwaku.core.data.image.ReaderPerf
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -45,7 +46,7 @@ internal class ReaderPrefetcher(
                 ReaderPerf.log { "prefetch_start index=$target count=${window.size}" }
 
                 val visible = window.firstOrNull() ?: return@launch
-                download(visible)
+                download(visible.first, visible.second)
                 ReaderPerf.log { "prefetch_visible_done index=$target ms=${ReaderPerf.mark() - started}" }
 
                 if (!prefetchAllowed()) {
@@ -56,8 +57,8 @@ internal class ReaderPrefetcher(
                 for (batch in window.drop(1).chunked(PREFETCH_CONCURRENCY)) {
                     if (!isActive) return@launch
                     coroutineScope {
-                        batch.forEach { page ->
-                            launch { download(page) }
+                        batch.forEach { (page, priority) ->
+                            launch { download(page, priority) }
                         }
                     }
                 }
@@ -69,9 +70,9 @@ internal class ReaderPrefetcher(
         job?.cancel()
     }
 
-    private suspend fun download(page: PageImage) {
+    private suspend fun download(page: PageImage, priority: PagePriority) {
         try {
-            store.prepare(page)
+            store.prepare(page, priority)
             onPageReady(page)
         } catch (e: CancellationException) {
             throw e
@@ -81,16 +82,17 @@ internal class ReaderPrefetcher(
         }
     }
 
-    private fun window(index: Int): List<PageImage> {
-        val window = LinkedHashSet<PageImage>()
-        window += pages[index]
+    /** Visible page first, then the pages ahead (normal), then the few behind (lowest). */
+    private fun window(index: Int): List<Pair<PageImage, PagePriority>> {
+        val window = LinkedHashMap<PageImage, PagePriority>()
+        window[pages[index]] = PagePriority.Visible
         for (offset in 1..ahead) {
-            pages.getOrNull(index + offset)?.let { window += it }
+            pages.getOrNull(index + offset)?.let { window.putIfAbsent(it, PagePriority.Nearby) }
         }
         for (offset in 1..behind) {
-            pages.getOrNull(index - offset)?.let { window += it }
+            pages.getOrNull(index - offset)?.let { window.putIfAbsent(it, PagePriority.Behind) }
         }
-        return window.toList()
+        return window.map { (page, priority) -> page to priority }
     }
 
     private companion object {

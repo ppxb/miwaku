@@ -64,7 +64,12 @@ data class PageSize(
     val stamp: Long = 0L,
 )
 
-enum class PagePriority { Visible, Nearby, Behind, Warmup, Download }
+/**
+ * Who is waiting for a page, highest urgency first. The store pumps flights in this order, so
+ * `Retry` (a page the reader already failed to show) jumps ahead of everything else and `Download`
+ * always yields to the reader.
+ */
+enum class PagePriority { Retry, Visible, Nearby, Behind, Warmup, Download }
 
 /**
  * On-disk cache for original page bytes. Decoding, unscrambling and downsampling stay in Coil;
