@@ -17,7 +17,6 @@ import kotlinx.coroutines.sync.withLock
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import org.json.JSONObject
 import org.json.JSONTokener
 
 data class SettingSnapshot(
@@ -513,28 +512,15 @@ class ApiClient(
         callTimeoutMs: Long,
     ): Any {
         val body = requestText(base, path, params, ts, version, callTimeoutMs)
-        val outer =
-            try {
-                JSONObject(body)
-            } catch (_: Exception) {
-                throw ApiFailure.Decode("invalid envelope")
-            }
-        val code = outer.optInt("code", -1)
-        if (code != 200) {
-            val message =
-                sequenceOf("errorMsg", "msg", "message")
-                    .map { outer.optString(it) }
-                    .firstOrNull { it.isNotBlank() && it != "null" }
-                    .orEmpty()
-            throw ApiFailure.Business(code, message)
-        }
-        val decoded =
-            Codec.decodeJson(outer.optString("data"), ts)
-                ?: throw ApiFailure.Decode("undecodable data")
-        return try {
-            JSONTokener(decoded).nextValue()
-        } catch (_: Exception) {
-            throw ApiFailure.Decode("invalid json")
+        return when (val envelope = Codec.decodeEnvelope(body, ts)) {
+            is Codec.Envelope.Payload ->
+                try {
+                    JSONTokener(envelope.json).nextValue()
+                } catch (_: Exception) {
+                    throw ApiFailure.Decode("invalid json")
+                }
+            is Codec.Envelope.Business -> throw ApiFailure.Business(envelope.code, envelope.message)
+            is Codec.Envelope.Invalid -> throw ApiFailure.Decode(envelope.reason)
         }
     }
 
@@ -570,7 +556,11 @@ class ApiClient(
                 throw ApiFailure.Network(e.message ?: "request failed", e)
             }
         response.use {
-            if (!it.isSuccessful) throw ApiFailure.Http(it.code)
+            if (!it.isSuccessful) {
+                // Keep the editor/CDN text: "HTTP 520" alone tells the user nothing.
+                val text = runCatching { it.body?.string().orEmpty() }.getOrDefault("")
+                throw ApiFailure.Http(it.code, Codec.serverMessage(text, ts))
+            }
             val body = it.body ?: throw ApiFailure.Decode("empty body")
             return try {
                 body.string()

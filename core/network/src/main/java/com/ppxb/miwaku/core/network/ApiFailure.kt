@@ -9,8 +9,9 @@ sealed class ApiFailure(message: String, cause: Throwable? = null) : Exception(m
     /** Connection refused, timeout, TLS reset, DNS failure. */
     class Network(message: String, cause: Throwable? = null) : ApiFailure(message, cause)
 
-    /** HTTP status outside 2xx. */
-    class Http(val code: Int) : ApiFailure("HTTP $code")
+    /** HTTP status outside 2xx. [serverMessage] carries the best-effort text from the error body. */
+    class Http(val code: Int, val serverMessage: String = "") :
+        ApiFailure("HTTP $code${if (serverMessage.isNotBlank()) ": $serverMessage" else ""}")
 
     /** Envelope was readable but the business `code` is not 200. Never retried or failed over. */
     class Business(val code: Int, val serverMessage: String) : ApiFailure("code $code: $serverMessage")

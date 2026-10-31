@@ -1,47 +1,20 @@
 package com.ppxb.miwaku.core.network
 
-import java.security.MessageDigest
-import javax.crypto.Cipher
-import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.runBlocking
-import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+/**
+ * Transport-level behaviour only. Anything that has to parse the host config or the envelope needs
+ * the platform's org.json, so those cases live in the device suite (EndpointJsonTest).
+ */
 class DomainResolverTest {
-
-    private fun md5Hex(value: String): String =
-        MessageDigest.getInstance("MD5")
-            .digest(value.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it.toInt() and 0xFF) }
-
-    private fun encryptHostConfig(json: String, secret: String = ApiConfig.HOST_CONFIG_SECRET): String {
-        val key = SecretKeySpec(md5Hex(secret).toByteArray(Charsets.UTF_8), "AES")
-        val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
-        cipher.init(Cipher.ENCRYPT_MODE, key)
-        val encrypted = cipher.doFinal(json.toByteArray(Charsets.UTF_8))
-        return java.util.Base64.getEncoder().encodeToString(encrypted)
-    }
-
-    @Test
-    fun testDecodeHostConfig_success() {
-        val json = """{"Server": ["www.cdnhjk.net", "cdngwc.cc/", "https://cdngwc.net"]}"""
-        val encrypted = encryptHostConfig(json)
-
-        val domains = Codec.decodeHostConfig("\uFEFF$encrypted")
-        assertNotNull("domains should not be null", domains)
-        assertEquals(3, domains!!.size)
-        assertEquals("https://www.cdnhjk.net", domains[0])
-        assertEquals("https://cdngwc.cc", domains[1])
-        assertEquals("https://cdngwc.net", domains[2])
-    }
 
     @Test
     fun testResolveCandidateDomains_fallbackOnFailure() = runBlocking {
@@ -64,32 +37,6 @@ class DomainResolverTest {
             fallbacks = listOf("https://fallback.net"),
         )
         assertEquals(listOf("https://fallback.net"), candidates)
-    }
-
-    @Test
-    fun testResolveCandidateDomains_remoteWins() = runBlocking {
-        val json = """{"Server": ["dynamic-1.com", "dynamic-2.com"]}"""
-        val encrypted = encryptHostConfig(json)
-
-        val client =
-            OkHttpClient.Builder()
-                .addInterceptor { chain ->
-                    Response.Builder()
-                        .request(chain.request())
-                        .protocol(Protocol.HTTP_1_1)
-                        .code(200)
-                        .message("OK")
-                        .body(encrypted.toResponseBody("text/plain".toMediaType()))
-                        .build()
-                }
-                .build()
-
-        val resolver = DomainResolver(client)
-        val candidates = resolver.resolveCandidateDomains(
-            sources = listOf("https://dummy.source/newsvr.txt"),
-            fallbacks = listOf("https://fallback.net"),
-        )
-        assertEquals(listOf("https://dynamic-1.com", "https://dynamic-2.com"), candidates)
     }
 
     @Test

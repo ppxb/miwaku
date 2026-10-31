@@ -82,6 +82,61 @@ class EndpointJsonTest {
         assertEquals(0, image.single().failures)
     }
 
+    @Test
+    fun hostConfigIsJsonParsedAndNormalized() = runBlocking {
+        val store = FakeStateStore()
+        val client =
+            ApiClient(
+                interceptorClient { request ->
+                    val url = request.url
+                    when {
+                        url.host.contains("bytepluses") ->
+                            response(request, 200, encryptHostConfig("\uFEFF{\"Server\":[\"cdngwc.cc/\"]}"))
+                        url.encodedPath.endsWith("nopic-.gif") -> response(request, 200, "GIF89a")
+                        url.encodedPath.startsWith("/setting") ->
+                            if (url.host == "cdngwc.cc") {
+                                settingResponse(request, "https://img-new.net")
+                            } else {
+                                response(request, 503, "{}")
+                            }
+                        url.host == "cdngwc.cc" -> apiResponse(request)
+                        else -> response(request, 500, "{}")
+                    }
+                },
+                store,
+            )
+
+        client.getJson("/api")
+
+        assertEquals("https://cdngwc.cc", store.value?.chosenApi)
+    }
+
+    @Test
+    fun nonSuccessResponseKeepsTheServerMessage() = runBlocking {
+        val store = FakeStateStore()
+        val client =
+            ApiClient(
+                interceptorClient { request ->
+                    val url = request.url
+                    when {
+                        url.host.contains("bytepluses") ->
+                            response(request, 200, encryptHostConfig("""{"Server":["new.net"]}"""))
+                        url.encodedPath.endsWith("nopic-.gif") -> response(request, 200, "GIF89a")
+                        url.encodedPath.startsWith("/setting") -> settingResponse(request, "https://img-new.net")
+                        else -> response(request, 520, """{"code":520,"msg":"請稍後再試"}""")
+                    }
+                },
+                store,
+            )
+
+        val failure = runCatching { client.getJson("/album") }.exceptionOrNull()
+
+        assertTrue("expected an HTTP failure, got $failure", failure is ApiFailure.Http)
+        val http = failure as ApiFailure.Http
+        assertEquals(520, http.code)
+        assertEquals("請稍後再試", http.serverMessage)
+    }
+
     private fun interceptorClient(handler: (Request) -> Response): OkHttpClient =
         OkHttpClient.Builder()
             .addInterceptor { chain -> handler(chain.request()) }

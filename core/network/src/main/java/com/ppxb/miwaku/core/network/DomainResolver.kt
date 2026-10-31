@@ -295,50 +295,28 @@ internal class DomainResolver(
                             httpStatus = resp.code,
                             reason = "empty body",
                         )
-                val outer =
-                    runCatching { JSONObject(body) }.getOrNull()
-                        ?: return EndpointProbe(
-                            baseUrl = base,
-                            status = EndpointStatus.Degraded,
-                            latencyMs = latency,
-                            httpStatus = resp.code,
-                            reason = "non-json body",
-                        )
-                val code = outer.optInt("code", -1)
-                if (code != 200) {
-                    val msg =
-                        sequenceOf("errorMsg", "msg", "message")
-                            .map { outer.optString(it) }
-                            .firstOrNull { it.isNotBlank() && it != "null" }
-                            .orEmpty()
-                    return EndpointProbe(
-                        baseUrl = base,
-                        status = EndpointStatus.Degraded,
-                        latencyMs = latency,
-                        httpStatus = resp.code,
-                        reason = "code $code: $msg",
-                    )
-                }
-                val data =
-                    outer.optString("data").takeIf { it.isNotBlank() && it != "null" }
-                        ?: return EndpointProbe(
-                            baseUrl = base,
-                            status = EndpointStatus.Degraded,
-                            latencyMs = latency,
-                            httpStatus = resp.code,
-                            reason = "missing data field",
-                        )
-                val decoded =
-                    Codec.decodeJson(data, ts)
-                        ?: return EndpointProbe(
-                            baseUrl = base,
-                            status = EndpointStatus.Degraded,
-                            latencyMs = latency,
-                            httpStatus = resp.code,
-                            reason = "decrypt failed",
-                        )
+                val payload =
+                    when (val envelope = Codec.decodeEnvelope(body, ts)) {
+                        is Codec.Envelope.Business ->
+                            return EndpointProbe(
+                                baseUrl = base,
+                                status = EndpointStatus.Degraded,
+                                latencyMs = latency,
+                                httpStatus = resp.code,
+                                reason = "code ${envelope.code}: ${envelope.message}",
+                            )
+                        is Codec.Envelope.Invalid ->
+                            return EndpointProbe(
+                                baseUrl = base,
+                                status = EndpointStatus.Degraded,
+                                latencyMs = latency,
+                                httpStatus = resp.code,
+                                reason = envelope.reason,
+                            )
+                        is Codec.Envelope.Payload -> envelope.json
+                    }
                 val setting =
-                    runCatching { JSONObject(decoded) }.getOrNull()
+                    runCatching { JSONObject(payload) }.getOrNull()
                         ?: return EndpointProbe(
                             baseUrl = base,
                             status = EndpointStatus.Degraded,

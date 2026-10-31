@@ -32,10 +32,6 @@ internal object Codec {
         return null
     }
 
-    private val SERVER_ARRAY_REGEX =
-        Regex(""""Server"\s*:\s*\[(.*?)\]""", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
-    private val STRING_ITEM_REGEX = Regex(""""([^"]+)"""")
-
     /**
      * Decrypts the remote domain server list payload fetched from Bytepluses.
      * The payload is AES-ECB encrypted with the MD5 hex of [ApiConfig.HOST_CONFIG_SECRET].
@@ -43,8 +39,8 @@ internal object Codec {
     @SuppressLint("GetInstance")
     fun decodeHostConfig(raw: String): List<String>? =
         runCatching {
-            // Bytepluses files often carry a BOM, newlines, or a CDN preamble. Keep only
-            // base64 alphabet characters before normalizing for the AES payload.
+            // Bytepluses files often carry a BOM or newlines. Keep only base64 alphabet characters
+            // before normalizing for the AES payload.
             val cleaned =
                 raw.filter {
                     it.isLetterOrDigit() || it == '+' || it == '/' || it == '=' || it == '-' || it == '_'
@@ -59,12 +55,9 @@ internal object Codec {
             parseHostList(text)
         }.getOrNull()
 
-    /**
-     * Parses the decrypted host document. JSON is authoritative; the regex path only exists for
-     * payloads wrapped in a CDN preamble that makes the whole body invalid JSON.
-     */
+    /** Parses the decrypted host document. JSON is the only accepted shape. */
     internal fun parseHostList(text: String): List<String>? {
-        val domains = jsonHosts(text) ?: regexHosts(text) ?: return null
+        val domains = jsonHosts(text) ?: return null
         return domains.mapNotNull(::normalizeHost).distinct().ifEmpty { null }
     }
 
@@ -82,13 +75,48 @@ internal object Codec {
             }.takeIf { it.isNotEmpty() }
         }.getOrNull()
 
-    private fun regexHosts(text: String): List<String>? {
-        val arrayContent = SERVER_ARRAY_REGEX.find(text)?.groupValues?.get(1) ?: return null
-        return STRING_ITEM_REGEX.findAll(arrayContent)
-            .map { it.groupValues[1] }
-            .toList()
-            .takeIf { it.isNotEmpty() }
+    /** Envelope decoded once for both API calls and `/setting` probes. */
+    internal sealed class Envelope {
+        data class Payload(val json: String) : Envelope()
+
+        data class Business(val code: Int, val message: String) : Envelope()
+
+        data class Invalid(val reason: String) : Envelope()
     }
+
+    internal fun decodeEnvelope(body: String, ts: Long): Envelope {
+        val outer =
+            runCatching { JSONObject(body) }.getOrNull()
+                ?: return Envelope.Invalid("invalid envelope")
+        val code = outer.optInt("code", -1)
+        if (code != 200) return Envelope.Business(code, errorMessage(outer))
+        val data =
+            outer.optString("data").takeIf { it.isNotBlank() && it != "null" }
+                ?: return Envelope.Invalid("missing data field")
+        val decoded =
+            decodeJson(data, ts)
+                ?: return Envelope.Invalid("undecodable data")
+        return Envelope.Payload(decoded)
+    }
+
+    /**
+     * Best-effort server text for a non-2xx response, where the body may be either the usual
+     * envelope or the raw message the editor put behind its WAF page.
+     */
+    internal fun serverMessage(body: String, ts: Long): String {
+        val outer =
+            runCatching { JSONObject(body) }.getOrNull()
+                ?: return ""
+        errorMessage(outer).let { if (it.isNotEmpty()) return it }
+        val decoded = decodeJson(outer.optString("data"), ts) ?: return ""
+        return runCatching { errorMessage(JSONObject(decoded)) }.getOrDefault("")
+    }
+
+    private fun errorMessage(outer: JSONObject): String =
+        sequenceOf("errorMsg", "msg", "message")
+            .map { outer.optString(it) }
+            .firstOrNull { it.isNotBlank() && it != "null" }
+            .orEmpty()
 
     private fun normalizeHost(domain: String): String? {
         val trimmed = domain.trim().trimEnd('/')
