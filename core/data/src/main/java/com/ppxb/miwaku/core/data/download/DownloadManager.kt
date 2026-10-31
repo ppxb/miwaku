@@ -173,12 +173,13 @@ class DownloadManager(
                                 var lastError: Exception? = null
                                 for (attempt in 0..2) {
                                     try {
-                                        val source = pageStore.prepare(image, PagePriority.Download)
+                                        val source = pageStore.prepareTo(image, target, PagePriority.Download)
                                         if (source.absolutePath != target.absolutePath) {
+                                            // A reader flight owned the bytes; copy them into the offline slot.
                                             copyPage(source, target)
-                                            // The offline copy owns the bytes now; keep a single file per page.
-                                            pageStore.releaseCachedCopy(image)
                                         }
+                                        // The offline copy owns the bytes now; drop any reader copy.
+                                        pageStore.releaseCachedCopy(image)
                                         store.recordPage(task.chapterId, index, page.fileName)
                                         lastError = null
                                         break

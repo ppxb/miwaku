@@ -59,11 +59,11 @@
 | 并发 | 3 个传输 | 读者线程 2，fetcher 8 / decoder 3 | 5（可被插件声明） | 网络 12 / 解码 4，双预算 |
 | 优先级 | Visible/Nearby/Behind/Warmup/Download | 三级（当前页/预取/重试） | 无（顺序预热） | 三级 |
 | 取消 | 最后一个使用者退出才取消 Call | 随 composable 销毁 | 取消信号 | watch + select，取消不换图床 |
-| 完整性校验 | 尺寸 > 0 | — | — | magic 判格式 + EOI/IEND + 读时自愈 |
-| 尺寸缓存 | 仅内存（进程死即失） | Coil 内存 | zstd 二进制落盘 | — |
+| 完整性校验 | magic 判格式 + **JPEG EOI / PNG IEND / GIF 3B / WebP RIFF 长度**，不合格按可重试网络错误在提交前拒绝 | — | — | magic 判格式 + EOI/IEND + 读时自愈 |
+| 尺寸缓存 | **二进制快照落盘**（`sizes.bin` v1，2s 防抖写，启动即恢复） | Coil 内存 | zstd 二进制落盘 | — |
 | 缓存上限 | 1GB（min 512MB），缓存目录 LRU | ChapterCache 可配 | 磁盘 LRU | `evict_if_needed` |
 
-**差距**：①尺寸不落盘，冷启动 webtoon 先抖；②无写入完整性校验（截断图能入库）；③缓存与离线两套目录（已用 `releaseCachedCopy` 缓解，理想是统一 canonical path）。
+**差距**：三条已在本轮收口（完整性校验、尺寸落盘、下载直写）；剩余是「缓存与离线仍是两套路径」（同页最终只留一份，但缓存路径不参与离线寻址）。
 
 ### 4. 阅读器
 
@@ -186,13 +186,13 @@
 - [x] A6 图床池 + 占位图 `/media/users/nopic-.gif` 探测（404 保留为 degraded，不剔除）
 - [x] A7 UA 随机机型 + 持久 deviceId（首启生成 seed，`UserAgentStore` 持久化，三处请求共用）
 - [ ] B2 下载改 worker pool，`recordPage` 批量提交（验收：150 页 ≤ 30 次事务）
-- [ ] B4 下载直写离线目录，取消「复制后删」（验收：同一页磁盘只有一份）
+- [x] B4 下载直写离线目录，取消「复制后删」（验收：同一页磁盘只有一份）
 
 ### P1（结构债）
 
 - [ ] B3 拆 `ReaderScreen`（viewport / webtoon / paged / menu），`currentGlobal` 收敛单通道（验收：单文件 < 500 行，30 个设备用例全绿）
-- [ ] A3 下载提交前做图片完整性校验（magic + EOI/IEND）
-- [ ] A4 页尺寸二进制落盘（验收：冷启动 webtoon 不依赖 `medianPageRatio`）
+- [x] A3 下载提交前做图片完整性校验（magic + EOI/IEND）
+- [x] A4 页尺寸二进制落盘（验收：冷启动 webtoon 不依赖 `medianPageRatio`）
 - [ ] B1 抽 `PageSource` 接口（在线 / 离线），为压缩包与导出铺路
 - [ ] 补 `docs/api-contract.md` + `Codec`/`Scramble`/`PageMapper` 单测（fixtures 驱动）
 
@@ -246,9 +246,12 @@
 | 统一信封解码 | `Codec.decodeEnvelope` | 外层 JSON、`code`、`data` 解包只写一次：`ApiClient.requestJson` 与 `/setting` 探测共用；host 配置删掉正则兜底，只认 JSON |
 | 非 2xx 文案 | `ApiFailure.Http`、`Codec.serverMessage` | 非 2xx 时读 body 并尽量解出 `errorMsg/msg/message`（含加密 `data` 里的），异常信息形如 `HTTP 520: 請稍後再試`，不再是裸状态码 |
 | 采纳保留延迟 | `ApiClient.adoptBase` | 切到实际服务线路时复用原条目，不再把 `latencyMs` 重置为 0；`EndpointPoolE2ETest` 新增 1 例 |
-| 测试 | `EndpointHealthTest`、`EndpointStateTest`、`EndpointJsonTest`、`EndpointPoolE2ETest`、`ApiFailureTest`、`UserAgentTest`、`RequestHeadersTest`、`ImageFailoverTest`、`EndpointStateStoreTest` | JVM 28 例 + 设备 38 例全绿（`CodecHostListTest` 随正则兜底一并删除，host 配置解析改由设备侧 `EndpointJsonTest` 覆盖） |
+| 图片完整性 | `ImageIntegrity`、`PageImageStore.download` | 提交前按容器尾判完整：JPEG `FFD9`、PNG `IEND`+CRC 位、GIF `3B`、WebP 比对 RIFF 长度、BMP 比对头内长度；未知容器交给解码器。不合格抛 `ApiFailure.Network`（可重试），temp 不提交 |
+| 尺寸快照 | `PageImageStore` | `sizes.bin`（int 版本 + count + key/宽高），2s 防抖写、启动即恢复并参与 LRU；`clearCache` 一并删快照 |
+| 下载直写 | `PageImageStore.prepareTo`、`DownloadManager` | 下载直接写离线目录（temp + rename），不再「缓存→复制→删」；若同一页有读者 flight 在跑则复用其结果再落目标。设备用例断言目标存在、缓存副本不存在 |
+| 测试 | `EndpointHealthTest`、`EndpointStateTest`、`EndpointJsonTest`、`EndpointPoolE2ETest`、`ApiFailureTest`、`UserAgentTest`、`RequestHeadersTest`、`ImageFailoverTest`、`EndpointStateStoreTest`、`ImageIntegrityTest`、`PageImageStoreDeviceTest` | JVM 32 例 + 设备 41 例全绿（`CodecHostListTest` 随正则兜底一并删除，host 配置解析改由设备侧 `EndpointJsonTest` 覆盖） |
 
-验证：`:app:lintDebug`、`:app:testDebugUnitTest`、`:core:network:testDebugUnitTest`、`:core:database:testDebugUnitTest` 全部通过；设备侧 `TEST-SM-A5360.xml` 记录 33/33 通过（AGP 任务本身仍报 exit code 1，见下）。兜底二级探测与图床静态兜底改动后各重跑一次 `:core:network:testDebugUnitTest`，编译 + 单测均通过；探测传输拆分后 `:core:network:testDebugUnitTest`、`:app:compileDebugAndroidTestKotlin` 通过，模拟器 `emulator-5554` 上 `EndpointPoolE2ETest` 3/3 通过；403 归类改动后 `:core:network:testDebugUnitTest` 25 例全绿（含新增 `ApiFailureTest` 4 例）；图床探测超时改 5s 后真机测 4 台 × 2 轮全 200 且均 < 5s；请求头收敛 + UA 持久随机后 `:core:network:testDebugUnitTest` 33 例全绿，真机 `UserAgentDeviceTest` 通过（UA 跨实例稳定、`cdnhjk`/`cdnutc` 的 `/setting` 均 200）；图床非阻塞 + 30s 预算 + 端点状态页后 `:core:network:testDebugUnitTest` 34 例全绿、设备 `EndpointPoolE2ETest` 4/4 通过、`FailoverBudgetDeviceTest` 实测 30.0s 收敛（临时用例已回收），模拟器上端点状态页实测有数据（当前线路 1179 ms、3 条线路、2 台图床）；探测记录 v3 后 `EndpointStateStoreTest` 2/2、`EndpointPoolE2ETest` 4/4、`EndpointJsonTest` 2/2 通过，模拟器实测 4 条线路全列出、`cdnhjk.net` 灰色「探测失败」、`cdngwc.club` 显示「探测降级 · 当前」、`cdngwc.net` 显示运行期「降权 ×1」；信封统一 + JSON-only 解析 + 非 2xx 文案后 `:core:network:testDebugUnitTest` 28 例全绿、设备 `EndpointJsonTest` 4/4 通过（含 `hostConfigIsJsonParsedAndNormalized`、`nonSuccessResponseKeepsTheServerMessage`；AGP 任务仍报 exit 1，按 XML 判定）。
+验证：`:app:lintDebug`、`:app:testDebugUnitTest`、`:core:network:testDebugUnitTest`、`:core:database:testDebugUnitTest` 全部通过；设备侧 `TEST-SM-A5360.xml` 记录 33/33 通过（AGP 任务本身仍报 exit code 1，见下）。兜底二级探测与图床静态兜底改动后各重跑一次 `:core:network:testDebugUnitTest`，编译 + 单测均通过；探测传输拆分后 `:core:network:testDebugUnitTest`、`:app:compileDebugAndroidTestKotlin` 通过，模拟器 `emulator-5554` 上 `EndpointPoolE2ETest` 3/3 通过；403 归类改动后 `:core:network:testDebugUnitTest` 25 例全绿（含新增 `ApiFailureTest` 4 例）；图床探测超时改 5s 后真机测 4 台 × 2 轮全 200 且均 < 5s；请求头收敛 + UA 持久随机后 `:core:network:testDebugUnitTest` 33 例全绿，真机 `UserAgentDeviceTest` 通过（UA 跨实例稳定、`cdnhjk`/`cdnutc` 的 `/setting` 均 200）；图床非阻塞 + 30s 预算 + 端点状态页后 `:core:network:testDebugUnitTest` 34 例全绿、设备 `EndpointPoolE2ETest` 4/4 通过、`FailoverBudgetDeviceTest` 实测 30.0s 收敛（临时用例已回收），模拟器上端点状态页实测有数据（当前线路 1179 ms、3 条线路、2 台图床）；探测记录 v3 后 `EndpointStateStoreTest` 2/2、`EndpointPoolE2ETest` 4/4、`EndpointJsonTest` 2/2 通过，模拟器实测 4 条线路全列出、`cdnhjk.net` 灰色「探测失败」、`cdngwc.club` 显示「探测降级 · 当前」、`cdngwc.net` 显示运行期「降权 ×1」；信封统一 + JSON-only 解析 + 非 2xx 文案后 `:core:network:testDebugUnitTest` 28 例全绿、设备 `EndpointJsonTest` 4/4 通过（含 `hostConfigIsJsonParsedAndNormalized`、`nonSuccessResponseKeepsTheServerMessage`；AGP 任务仍报 exit 1，按 XML 判定）；图片管线 A3/A4/B4 后 `:core:data:testDebugUnitTest` 4 例（`ImageIntegrityTest`）、`:core:network:testDebugUnitTest` 28 例全绿，设备 `PageImageStoreDeviceTest` 3/3 通过（直写目标、缓存副本不存在、尺寸快照跨实例恢复、截断体被拒；XML/HTML 均 100%，AGP 仍报 exit 1）。
 
 ### 域名来源实测（2026-10-30，直连 4 轮 + 系统代理 2 轮）
 

@@ -5,7 +5,13 @@ import android.graphics.BitmapFactory
 import com.ppxb.miwaku.core.network.ApiFailure
 import com.ppxb.miwaku.core.network.RequestHeaders
 import com.ppxb.miwaku.core.network.await
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.IOException
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
@@ -20,6 +26,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -73,6 +80,7 @@ class PageImageStore(
     private val cacheLimitBytes: () -> Long = { DEFAULT_CACHE_LIMIT_BYTES },
 ) {
     private val cacheRoot = File(context.cacheDir, "$CACHE_DIR/v$CACHE_VERSION")
+    private val sizeSnapshot = File(cacheRoot, SIZE_SNAPSHOT_NAME)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var runningDownloads = 0
     private val inFlight = HashMap<String, Flight>()
@@ -86,9 +94,13 @@ class PageImageStore(
     private val sizeLock = Any()
     private val _sizes = MutableStateFlow<Map<String, PageSize>>(emptyMap())
     val sizes: StateFlow<Map<String, PageSize>> = _sizes.asStateFlow()
+    @Volatile private var sizePersistJob: Job? = null
 
     init {
-        scope.launch { trim() }
+        scope.launch {
+            loadSizeSnapshot()
+            trim()
+        }
     }
 
     fun cachedFile(image: PageImage): File? {
@@ -103,15 +115,46 @@ class PageImageStore(
         prepare(image, flowOf(priority))
 
     suspend fun prepare(image: PageImage, priorities: Flow<PagePriority>): File =
+        prepareInternal(image, priorities, target = null)
+
+    /**
+     * Downloads straight into [target] (the offline directory), so the durable copy never needs a
+     * second write pass. When a reader flight for the same page is already running, its result is
+     * copied into [target] instead of downloading the bytes again.
+     */
+    suspend fun prepareTo(
+        image: PageImage,
+        target: File,
+        priority: PagePriority = PagePriority.Download,
+    ): File = prepareTo(image, target, flowOf(priority))
+
+    suspend fun prepareTo(
+        image: PageImage,
+        target: File,
+        priorities: Flow<PagePriority>,
+    ): File = prepareInternal(image, priorities, target)
+
+    private suspend fun prepareInternal(
+        image: PageImage,
+        priorities: Flow<PagePriority>,
+        target: File?,
+    ): File =
         withContext(Dispatchers.IO) {
             admissionPaused?.await()
+            if (target != null && target.isFile && target.length() > 0) {
+                readSize(target)?.let { size ->
+                    recordSize(image, size)
+                    ReaderPerf.log { "page_download_hit key=${image.cacheKey}" }
+                    return@withContext target
+                }
+            }
             localFile(image)?.let { file ->
                 if (file.isFile && file.length() > 0) {
                     readSize(file)?.let { size ->
                         readyFiles[image.cacheKey] = file
                         recordSize(image, size)
                         ReaderPerf.log { "page_download_hit key=${image.cacheKey}" }
-                        return@withContext file
+                        return@withContext if (target != null) adopt(file, target) else file
                     }
                 }
             }
@@ -119,9 +162,10 @@ class PageImageStore(
             cachedFile(image)?.let { file ->
                 val size = readSize(file)
                 if (size != null) {
-                    readyFiles[image.cacheKey] = file
                     recordSize(image, size)
                     file.setLastModified(System.currentTimeMillis())
+                    if (target != null) return@withContext adopt(file, target)
+                    readyFiles[image.cacheKey] = file
                     if (file.isFile && file.length() > 0) {
                         ReaderPerf.log { "page_cache_hit key=${image.cacheKey}" }
                         return@withContext file
@@ -138,7 +182,7 @@ class PageImageStore(
                     currentCoroutineContext().ensureActive()
                     val flight = synchronized(flightsLock) {
                         if (admissionPaused != null) null else {
-                            val current = inFlight.getOrPut(image.cacheKey) { Flight(image) }
+                            val current = inFlight.getOrPut(image.cacheKey) { Flight(image, target) }
                             if (!current.closing) current.owners[owner] = PagePriority.Download
                             current
                         }
@@ -153,9 +197,15 @@ class PageImageStore(
                             }
                         }
                     }
-                    try { return@coroutineScope flight.result.await() }
-                    catch (cancel: CancellationException) { currentCoroutineContext().ensureActive() }
-                    finally { subscription.cancel(); leaveFlight(flight, owner) }
+                    try {
+                        val produced = flight.result.await()
+                        return@coroutineScope if (target != null) adopt(produced, target) else produced
+                    } catch (cancel: CancellationException) {
+                        currentCoroutineContext().ensureActive()
+                    } finally {
+                        subscription.cancel()
+                        leaveFlight(flight, owner)
+                    }
                     flight.finished.await()
                 }
                 @Suppress("UNREACHABLE_CODE") error("unreachable")
@@ -177,8 +227,8 @@ class PageImageStore(
                     if (cached != null) {
                         readyFiles[next.image.cacheKey] = cached
                         recordSize(next.image, checkNotNull(readSize(cached)))
-                        next.result.complete(cached)
-                    } else next.result.complete(download(next.image, next))
+                        next.result.complete(next.target?.let { adopt(cached, it) } ?: cached)
+                    } else next.result.complete(download(next.image, next, next.target ?: fileFor(next.image)))
                 } catch (error: Throwable) {
                     next.result.completeExceptionally(if (next.closing) CancellationException("request released") else error)
                 }
@@ -219,7 +269,7 @@ class PageImageStore(
         call?.cancel()
     }
 
-    private class Flight(val image: PageImage) {
+    private class Flight(val image: PageImage, val target: File? = null) {
         val result = CompletableDeferred<File>()
         val finished = CompletableDeferred<Unit>()
         val owners = HashMap<Any, PagePriority>()
@@ -271,6 +321,7 @@ class PageImageStore(
             _sizes.update { it - key }
             sizeKeys.remove(key)
         }
+        scheduleSizePersist()
     }
 
     /**
@@ -301,6 +352,8 @@ class PageImageStore(
             readyFiles.clear()
             sizeKeys.clear()
         }
+        sizePersistJob?.cancel()
+        sizeSnapshot.delete()
         ReaderPerf.log { "reader_cache_cleared" }
     }
 
@@ -321,9 +374,8 @@ class PageImageStore(
         }
     }
 
-    private suspend fun download(image: PageImage, flight: Flight): File {
+    private suspend fun download(image: PageImage, flight: Flight, target: File): File {
         val started = ReaderPerf.mark()
-        val target = fileFor(image)
         target.parentFile?.mkdirs()
         val temp = File.createTempFile("${target.name}.", ".tmp", target.parentFile)
         try {
@@ -343,6 +395,11 @@ class PageImageStore(
             currentCoroutineContext().ensureActive()
             if (temp.length() <= 0) {
                 throw IOException("empty image")
+            }
+            if (!ImageIntegrity.isComplete(temp)) {
+                // A truncated body still reports valid dimensions, so only the container tail can
+                // tell us the transfer was cut short.
+                throw ApiFailure.Network("incomplete image body")
             }
             val size = readSize(temp) ?: throw IOException("invalid image")
             synchronized(flightsLock) {
@@ -459,6 +516,7 @@ class PageImageStore(
             }
             touchSizeKey(image.cacheKey)
         }
+        scheduleSizePersist()
     }
 
     private fun touchSizeKey(key: String) {
@@ -545,6 +603,91 @@ class PageImageStore(
         }
     }
 
+    private fun adopt(source: File, target: File): File =
+        if (source.absolutePath == target.absolutePath) target else copyInto(source, target)
+
+    /** Copies [source] beside [target] and renames, so a half-written offline page never appears. */
+    private fun copyInto(source: File, target: File): File {
+        target.parentFile?.mkdirs()
+        val temp = File.createTempFile("${target.name}.", ".part", target.parentFile)
+        try {
+            source.inputStream().buffered().use { input ->
+                temp.outputStream().buffered().use { output -> input.copyTo(output) }
+            }
+            if (temp.length() <= 0L) throw IOException("empty page")
+            if (!temp.renameTo(target)) throw IOException("cannot commit page")
+            return target
+        } finally {
+            if (temp.exists()) temp.delete()
+        }
+    }
+
+    /** Sizes are cheap to persist and expensive to rebuild: one bounds read per page on every start. */
+    private fun loadSizeSnapshot() {
+        if (!sizeSnapshot.isFile) return
+        runCatching {
+            DataInputStream(BufferedInputStream(FileInputStream(sizeSnapshot))).use { input ->
+                if (input.readInt() != SIZE_SNAPSHOT_VERSION) return
+                val count = input.readInt()
+                if (count <= 0 || count > MAX_SIZE_ENTRIES) return
+                synchronized(sizeLock) {
+                    repeat(count) {
+                        val keyLength = input.readInt()
+                        if (keyLength <= 0 || keyLength > MAX_SNAPSHOT_KEY_BYTES) return
+                        val key =
+                            ByteArray(keyLength)
+                                .also { bytes -> input.readFully(bytes) }
+                                .toString(Charsets.UTF_8)
+                        val width = input.readInt()
+                        val height = input.readInt()
+                        if (width > 0 && height > 0) {
+                            _sizes.update { it + (key to PageSize(width, height)) }
+                            sizeKeys.remove(key)
+                            sizeKeys.add(key)
+                        }
+                    }
+                    while (sizeKeys.size > MAX_SIZE_ENTRIES) {
+                        val oldest = sizeKeys.first()
+                        sizeKeys.remove(oldest)
+                        _sizes.update { it - oldest }
+                    }
+                }
+            }
+            ReaderPerf.log { "sizes_restored count=${_sizes.value.size}" }
+        }.onFailure {
+            runCatching { sizeSnapshot.delete() }
+        }
+    }
+
+    private fun scheduleSizePersist() {
+        if (sizePersistJob?.isActive == true) return
+        sizePersistJob = scope.launch {
+            delay(SIZE_PERSIST_DEBOUNCE_MS)
+            persistSizeSnapshot()
+        }
+    }
+
+    private fun persistSizeSnapshot() {
+        val entries = synchronized(sizeLock) { _sizes.value.toList() }
+        if (entries.isEmpty()) return
+        runCatching {
+            cacheRoot.mkdirs()
+            val temp = File(cacheRoot, "$SIZE_SNAPSHOT_NAME.tmp")
+            DataOutputStream(BufferedOutputStream(FileOutputStream(temp))).use { output ->
+                output.writeInt(SIZE_SNAPSHOT_VERSION)
+                output.writeInt(entries.size)
+                for ((key, size) in entries) {
+                    val bytes = key.toByteArray(Charsets.UTF_8)
+                    output.writeInt(bytes.size)
+                    output.write(bytes)
+                    output.writeInt(size.width)
+                    output.writeInt(size.height)
+                }
+            }
+            if (!temp.renameTo(sizeSnapshot)) temp.delete()
+        }
+    }
+
     private fun sha1(value: String): String =
         MessageDigest
             .getInstance("SHA-1")
@@ -564,6 +707,10 @@ class PageImageStore(
         const val TEMP_MAX_AGE_MS = 60 * 60 * 1000L
         const val TRIM_EVERY_DOWNLOADS = 20
         const val MAX_SIZE_ENTRIES = 4096
+        const val SIZE_SNAPSHOT_NAME = "sizes.bin"
+        const val SIZE_SNAPSHOT_VERSION = 1
+        const val SIZE_PERSIST_DEBOUNCE_MS = 2_000L
+        const val MAX_SNAPSHOT_KEY_BYTES = 256
         val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp")
     }
 }
