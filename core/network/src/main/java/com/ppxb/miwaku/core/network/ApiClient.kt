@@ -168,7 +168,7 @@ class ApiClient(
     suspend fun getJson(
         path: String,
         params: Map<String, String> = emptyMap(),
-    ): ApiPayload = jsonFlights.run(requestKey(path, params)) { loadJson(path, params) }.await()
+    ): ApiPayload = jsonFlights.run(requestKey(path, params)) { loadJson(path, params) }
 
     /** Dedupe identity: the path plus the parameters in a stable order (the signed `t` is added later). */
     private fun requestKey(

@@ -410,9 +410,9 @@ class PageImageStore(
             try {
                 fetchTo(image.url, temp, flight)
             } catch (e: Exception) {
-                if (e is CancellationException) throw e
                 currentCoroutineContext().ensureActive()
-                if (!e.isAlternateHostRetryable()) throw e
+                // Cancellation is not a host problem: the caller is gone, so do not rotate.
+                if (!e.canRotateImageHost()) throw e
                 val retryUrl = alternateUrl(image) ?: throw e
                 ReaderPerf.log {
                     "image_host_retry key=${image.cacheKey} from=${image.url.toHttpUrlOrNull()?.host} to=${retryUrl.toHttpUrlOrNull()?.host}"
@@ -510,9 +510,6 @@ class PageImageStore(
             }
         }
     }
-
-    private fun Throwable.isAlternateHostRetryable(): Boolean =
-        (this as? ApiFailure)?.canRetryOnAlternateImageHost == true
 
     private suspend fun alternateUrl(image: PageImage): String? {
         val current = image.url.toHttpUrlOrNull() ?: return null
