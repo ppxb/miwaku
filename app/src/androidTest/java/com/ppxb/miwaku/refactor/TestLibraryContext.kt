@@ -84,6 +84,5 @@ internal suspend fun libraryFixture(chapterCount: Int): ComicDetail {
             }
         AppGraph.library.saveChapter(ChapterContent(id, chapter.id, chapter.name, pages), "https://example.invalid")
     }
-    AppGraph.library.recordVisit(ComicSummary(id, detail.title, detail.author, detail.coverUrl))
     return detail
 }

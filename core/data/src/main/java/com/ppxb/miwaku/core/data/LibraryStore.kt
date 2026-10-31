@@ -100,9 +100,4 @@ class LibraryStore(private val context: Context) : java.io.Closeable {
         })
         setManifest(content.chapterId, host)
     }
-
-    suspend fun recordVisit(comic: ComicSummary) = transaction {
-        seedComic(ComicRecord(comic.id, comic.title, comic.author, coverUrl = comic.coverUrl))
-        putHistory((history(comic.id) ?: HistoryRecord(comic.id)).copy(openedAt = System.currentTimeMillis()))
-    }
 }

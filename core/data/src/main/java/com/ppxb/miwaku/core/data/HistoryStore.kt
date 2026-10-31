@@ -9,10 +9,5 @@ class HistoryStore(private val library: LibraryStore) {
         .map { records -> records.map { ComicSummary(it.id, it.title, it.author, it.coverUrl) } }
         .stateIn(library.scope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    fun record(comic: ComicSummary) {
-        if (comic.id.isBlank() || comic.id == "0") return
-        library.scope.launch { library.recordVisit(comic) }
-    }
-
     fun clear() { library.scope.launch { library.transaction { clearHistory() } } }
 }

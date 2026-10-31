@@ -189,7 +189,6 @@ internal fun DetailScreen(
                             tasks = tasks,
                             downloaded = downloaded,
                             reading = reading,
-                            onMarkRead = viewModel::markRead,
                             listState = listState,
                             hazeState = hazeState,
                             background = DetailBackground,
@@ -530,7 +529,6 @@ private fun DetailContent(
     tasks: Map<String, DownloadTask>,
     downloaded: Set<String>,
     reading: Map<String, ChapterProgress>,
-    onMarkRead: (ChapterSummary, Boolean) -> Unit,
     listState: LazyListState,
     hazeState: HazeState,
     background: Color,
@@ -577,8 +575,6 @@ private fun DetailContent(
                 downloaded = downloaded.contains(chapter.id),
                 progress = reading[chapter.id],
                 onClick = { onOpenChapter(detail.id, chapter.id, -2) },
-                onStart = { onOpenChapter(detail.id, chapter.id, 0) },
-                onMarkRead = { onMarkRead(chapter, reading[chapter.id]?.isRead != true) },
                 onDownload = { onDownloadChapter(chapter) },
             )
             if (index == detail.chapters.lastIndex) {

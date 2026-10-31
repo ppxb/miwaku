@@ -149,14 +149,8 @@ internal class DetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel()
     }
 
     private fun show(detail: ComicDetail) {
-        AppGraph.history.record(
-            ComicSummary(
-                id = detail.id,
-                title = detail.title,
-                author = detail.author,
-                coverUrl = detail.coverUrl,
-            ),
-        )
+        // Opening the detail page is not reading: history is written by the reader's progress
+        // events (ProgressStore), so a glance at a cover does not pollute "最近阅读".
         _state.value = DetailUiState.Content(detail)
     }
 
