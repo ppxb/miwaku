@@ -5,13 +5,7 @@ import android.graphics.BitmapFactory
 import com.ppxb.miwaku.core.network.ApiFailure
 import com.ppxb.miwaku.core.network.RequestHeaders
 import com.ppxb.miwaku.core.network.await
-import java.io.BufferedInputStream
-import java.io.BufferedOutputStream
-import java.io.DataInputStream
-import java.io.DataOutputStream
 import java.io.File
-import java.io.FileInputStream
-import java.io.FileOutputStream
 import java.io.IOException
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
@@ -62,6 +56,8 @@ data class PageSize(
     val width: Int,
     val height: Int,
     val stamp: Long = 0L,
+    /** Scramble rows the bytes were fetched for; 0 means "not recorded". */
+    val splitCount: Int = 0,
 )
 
 /**
@@ -90,7 +86,7 @@ class PageImageStore(
     private val totalTransfers: Int = TOTAL_TRANSFERS,
 ) {
     private val cacheRoot = File(context.cacheDir, "$CACHE_DIR/v$CACHE_VERSION")
-    private val sizeSnapshot = File(cacheRoot, SIZE_SNAPSHOT_NAME)
+    private val sizeLog = File(cacheRoot, SIZE_LOG_NAME)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var runningTransfers = 0
     private var runningReaders = 0
@@ -107,10 +103,12 @@ class PageImageStore(
     private val _sizes = MutableStateFlow<Map<String, PageSize>>(emptyMap())
     val sizes: StateFlow<Map<String, PageSize>> = _sizes.asStateFlow()
     @Volatile private var sizePersistJob: Job? = null
+    /** Appended to [sizeLog] on the next flush; guarded by [sizeLock]. */
+    private val pendingSizes = ArrayList<PageSizeLog.Entry>()
 
     init {
         scope.launch {
-            loadSizeSnapshot()
+            loadSizeLog()
             trim()
         }
     }
@@ -172,19 +170,27 @@ class PageImageStore(
             }
 
             cachedFile(image)?.let { file ->
-                val size = readSize(file)
-                if (size != null) {
-                    recordSize(image, size)
-                    file.setLastModified(System.currentTimeMillis())
-                    if (target != null) return@withContext adopt(file, target)
-                    readyFiles[image.cacheKey] = file
-                    if (file.isFile && file.length() > 0) {
-                        ReaderPerf.log { "page_cache_hit key=${image.cacheKey}" }
-                        return@withContext file
+                if (isScrambleStale(image)) {
+                    // The bytes were fetched for a different scramble; decoding them with the new
+                    // splitCount would render a corrupted page, so treat them as a miss.
+                    ReaderPerf.log { "page_scramble_changed key=${image.cacheKey}" }
+                    if (file.absolutePath.startsWith(cacheRoot.absolutePath)) file.delete()
+                    forgetSize(image.cacheKey)
+                } else {
+                    val size = readSize(file)
+                    if (size != null) {
+                        recordSize(image, size)
+                        file.setLastModified(System.currentTimeMillis())
+                        if (target != null) return@withContext adopt(file, target)
+                        readyFiles[image.cacheKey] = file
+                        if (file.isFile && file.length() > 0) {
+                            ReaderPerf.log { "page_cache_hit key=${image.cacheKey}" }
+                            return@withContext file
+                        }
+                    } else if (file.absolutePath.startsWith(cacheRoot.absolutePath)) {
+                        // Never delete a downloaded copy; only the disposable reader cache is repaired here.
+                        file.delete()
                     }
-                } else if (file.absolutePath.startsWith(cacheRoot.absolutePath)) {
-                    // Never delete a downloaded copy; only the disposable reader cache is repaired here.
-                    file.delete()
                 }
             }
 
@@ -315,8 +321,8 @@ class PageImageStore(
                 currentCoroutineContext().ensureActive()
                 val file = cachedFile(image) ?: continue
                 val size = readSize(file) ?: continue
-            readyFiles[image.cacheKey] = file
-                found[image.cacheKey] = size
+                readyFiles[image.cacheKey] = file
+                found[image.cacheKey] = size.copy(splitCount = image.splitCount)
             }
             if (found.isNotEmpty()) {
                 synchronized(sizeLock) {
@@ -324,8 +330,12 @@ class PageImageStore(
                         val next = current.toMutableMap()
                         for ((key, size) in found) {
                             val existing = next[key]
-                            if (existing == null || existing.width != size.width || existing.height != size.height) {
-                                next[key] = PageSize(size.width, size.height, System.nanoTime())
+                            if (existing == null ||
+                                existing.width != size.width ||
+                                existing.height != size.height ||
+                                existing.splitCount != size.splitCount
+                            ) {
+                                next[key] = PageSize(size.width, size.height, System.nanoTime(), size.splitCount)
                             }
                         }
                         next
@@ -345,11 +355,7 @@ class PageImageStore(
         ReaderPerf.log { "page_invalidate key=$key" }
         fileFor(image).delete()
         readyFiles.remove(key)
-        synchronized(sizeLock) {
-            _sizes.update { it - key }
-            sizeKeys.remove(key)
-        }
-        scheduleSizePersist()
+        forgetSize(key)
     }
 
     /**
@@ -379,9 +385,10 @@ class PageImageStore(
             _sizes.value = emptyMap()
             readyFiles.clear()
             sizeKeys.clear()
+            pendingSizes.clear()
         }
         sizePersistJob?.cancel()
-        sizeSnapshot.delete()
+        sizeLog.delete()
         ReaderPerf.log { "reader_cache_cleared" }
     }
 
@@ -527,21 +534,22 @@ class PageImageStore(
 
     private fun recordSize(image: PageImage, size: PageSize, refresh: Boolean = false) {
         synchronized(sizeLock) {
-            _sizes.update { current ->
-                val existing = current[image.cacheKey]
-                if (!refresh &&
+            val existing = _sizes.value[image.cacheKey]
+            val unchanged =
+                !refresh &&
                     existing != null &&
                     existing.width == size.width &&
-                    existing.height == size.height
-                ) {
-                    current
-                } else {
-                    current + (image.cacheKey to PageSize(size.width, size.height, System.nanoTime()))
+                    existing.height == size.height &&
+                    existing.splitCount == image.splitCount
+            if (!unchanged) {
+                _sizes.update {
+                    it + (image.cacheKey to PageSize(size.width, size.height, System.nanoTime(), image.splitCount))
                 }
+                pendingSizes += PageSizeLog.Entry(image.cacheKey, size.width, size.height, image.splitCount)
             }
             touchSizeKey(image.cacheKey)
         }
-        scheduleSizePersist()
+        scheduleSizeFlush()
     }
 
     private fun touchSizeKey(key: String) {
@@ -583,7 +591,10 @@ class PageImageStore(
             .filter { it.name.endsWith(".tmp") && now - it.lastModified() > TEMP_MAX_AGE_MS }
             .forEach { it.delete() }
         val files = allFiles.filter { it.isFile && !it.name.endsWith(".tmp") }
-        if (files.isEmpty()) return
+        if (files.isEmpty()) {
+            pruneSizesForDeletedFiles(emptyList())
+            return
+        }
         val configured = cacheLimitBytes().coerceAtLeast(MIN_CACHE_BYTES)
         val budget =
             minOf(
@@ -591,7 +602,10 @@ class PageImageStore(
                 maxOf(MIN_CACHE_BYTES, cacheRoot.usableSpace / CACHE_FREE_SPACE_DIVISOR),
             )
         var total = files.sumOf { it.length() }
-        if (total <= budget) return
+        if (total <= budget) {
+            pruneSizesForDeletedFiles(files)
+            return
+        }
         val target = budget * 9 / 10
         for (file in files.sortedBy { it.lastModified() }) {
             if (total <= target) break
@@ -601,6 +615,7 @@ class PageImageStore(
                 total -= length
             }
         }
+        pruneSizesForDeletedFiles(files)
     }
 
     private fun fileFor(image: PageImage): File {
@@ -647,70 +662,119 @@ class PageImageStore(
         }
     }
 
-    /** Sizes are cheap to persist and expensive to rebuild: one bounds read per page on every start. */
-    private fun loadSizeSnapshot() {
-        if (!sizeSnapshot.isFile) return
-        runCatching {
-            DataInputStream(BufferedInputStream(FileInputStream(sizeSnapshot))).use { input ->
-                if (input.readInt() != SIZE_SNAPSHOT_VERSION) return
-                val count = input.readInt()
-                if (count <= 0 || count > MAX_SIZE_ENTRIES) return
-                synchronized(sizeLock) {
-                    repeat(count) {
-                        val keyLength = input.readInt()
-                        if (keyLength <= 0 || keyLength > MAX_SNAPSHOT_KEY_BYTES) return
-                        val key =
-                            ByteArray(keyLength)
-                                .also { bytes -> input.readFully(bytes) }
-                                .toString(Charsets.UTF_8)
-                        val width = input.readInt()
-                        val height = input.readInt()
-                        if (width > 0 && height > 0) {
-                            _sizes.update { it + (key to PageSize(width, height)) }
-                            sizeKeys.remove(key)
-                            sizeKeys.add(key)
-                        }
+    /** Replays the append-only log: the last record per key wins, `width <= 0` removes the key. */
+    private fun loadSizeLog() {
+        val entries = PageSizeLog.read(sizeLog)
+        if (entries.isEmpty()) return
+        synchronized(sizeLock) {
+            for (entry in entries) {
+                if (entry.width <= 0 || entry.height <= 0) {
+                    _sizes.update { it - entry.key }
+                    sizeKeys.remove(entry.key)
+                } else {
+                    _sizes.update {
+                        it + (entry.key to PageSize(entry.width, entry.height, splitCount = entry.splitCount))
                     }
-                    while (sizeKeys.size > MAX_SIZE_ENTRIES) {
-                        val oldest = sizeKeys.first()
-                        sizeKeys.remove(oldest)
-                        _sizes.update { it - oldest }
-                    }
+                    sizeKeys.remove(entry.key)
+                    sizeKeys.add(entry.key)
                 }
             }
-            ReaderPerf.log { "sizes_restored count=${_sizes.value.size}" }
-        }.onFailure {
-            runCatching { sizeSnapshot.delete() }
+            trimSizeKeysLocked()
+        }
+        ReaderPerf.log { "sizes_restored count=${_sizes.value.size}" }
+    }
+
+    private fun trimSizeKeysLocked() {
+        while (sizeKeys.size > MAX_SIZE_ENTRIES) {
+            val oldest = sizeKeys.first()
+            sizeKeys.remove(oldest)
+            _sizes.update { it - oldest }
         }
     }
 
-    private fun scheduleSizePersist() {
+    private fun scheduleSizeFlush() {
         if (sizePersistJob?.isActive == true) return
         sizePersistJob = scope.launch {
             delay(SIZE_PERSIST_DEBOUNCE_MS)
-            persistSizeSnapshot()
+            flushSizeLog()
         }
     }
 
-    private fun persistSizeSnapshot() {
-        val entries = synchronized(sizeLock) { _sizes.value.toList() }
-        if (entries.isEmpty()) return
-        runCatching {
-            cacheRoot.mkdirs()
-            val temp = File(cacheRoot, "$SIZE_SNAPSHOT_NAME.tmp")
-            DataOutputStream(BufferedOutputStream(FileOutputStream(temp))).use { output ->
-                output.writeInt(SIZE_SNAPSHOT_VERSION)
-                output.writeInt(entries.size)
-                for ((key, size) in entries) {
-                    val bytes = key.toByteArray(Charsets.UTF_8)
-                    output.writeInt(bytes.size)
-                    output.write(bytes)
-                    output.writeInt(size.width)
-                    output.writeInt(size.height)
+    /** Appends only what changed since the last flush instead of rewriting the whole map. */
+    private fun flushSizeLog() {
+        val batch =
+            synchronized(sizeLock) {
+                if (pendingSizes.isEmpty()) {
+                    emptyList()
+                } else {
+                    pendingSizes.toList().also { pendingSizes.clear() }
                 }
             }
-            if (!temp.renameTo(sizeSnapshot)) temp.delete()
+        if (batch.isEmpty()) return
+        runCatching { PageSizeLog.append(sizeLog, batch) }
+        maybeCompactSizeLog()
+    }
+
+    /** A log that has grown well past the live entries is rewritten once, in the background. */
+    private fun maybeCompactSizeLog() {
+        val live = synchronized(sizeLock) { _sizes.value.size }
+        val budget = maxOf(MIN_SIZE_LOG_BYTES, live.toLong() * SIZE_LOG_BYTES_PER_ENTRY)
+        if (sizeLog.length() <= budget) return
+        compactSizeLog()
+    }
+
+    private fun compactSizeLog() {
+        val entries =
+            synchronized(sizeLock) {
+                _sizes.value.map { (key, size) ->
+                    PageSizeLog.Entry(key, size.width, size.height, size.splitCount)
+                }
+            }
+        PageSizeLog.rewrite(sizeLog, entries)
+    }
+
+    /** The bytes no longer match the requested scramble, so the cache entry must go. */
+    private fun isScrambleStale(image: PageImage): Boolean {
+        val known = synchronized(sizeLock) { _sizes.value[image.cacheKey] } ?: return false
+        return known.splitCount != 0 && known.splitCount != image.splitCount
+    }
+
+    private fun forgetSize(key: String) {
+        synchronized(sizeLock) {
+            _sizes.update { it - key }
+            sizeKeys.remove(key)
+            pendingSizes += PageSizeLog.Entry(key, 0, 0, 0)
         }
+        scheduleSizeFlush()
+    }
+
+    /** Drops size records whose page file no longer exists, then rewrites the compacted log. */
+    private fun pruneSizesForDeletedFiles(aliveFiles: List<File>) {
+        val alive = HashMap<String, HashSet<String>>()
+        for (file in aliveFiles) {
+            if (!file.isFile) continue
+            val chapter = file.parentFile?.name ?: continue
+            val prefix = file.name.substringAfter('_', "").substringBefore('.')
+            if (prefix.isEmpty()) continue
+            alive.getOrPut(chapter) { HashSet() } += prefix
+        }
+        val stale =
+            synchronized(sizeLock) {
+                _sizes.value.keys.filter { key ->
+                    val chapter = key.substringBefore('/')
+                    val fileName = key.substringAfter('/', "")
+                    alive[chapter]?.contains(sha1(fileName).take(16)) != true
+                }
+            }
+        if (stale.isEmpty()) return
+        synchronized(sizeLock) {
+            for (key in stale) {
+                _sizes.update { it - key }
+                sizeKeys.remove(key)
+            }
+        }
+        ReaderPerf.log { "sizes_pruned count=${stale.size}" }
+        compactSizeLog()
     }
 
     private fun sha1(value: String): String =
@@ -734,10 +798,10 @@ class PageImageStore(
         const val TEMP_MAX_AGE_MS = 60 * 60 * 1000L
         const val TRIM_EVERY_DOWNLOADS = 20
         const val MAX_SIZE_ENTRIES = 4096
-        const val SIZE_SNAPSHOT_NAME = "sizes.bin"
-        const val SIZE_SNAPSHOT_VERSION = 1
+        const val SIZE_LOG_NAME = "sizes.log"
         const val SIZE_PERSIST_DEBOUNCE_MS = 2_000L
-        const val MAX_SNAPSHOT_KEY_BYTES = 256
+        const val MIN_SIZE_LOG_BYTES = 64L * 1024
+        const val SIZE_LOG_BYTES_PER_ENTRY = 64L
         val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp")
     }
 }

@@ -59,12 +59,12 @@ class PageImageStoreDeviceTest {
         val image = image("sizes")
         store.prepare(image)
 
-        // The snapshot is written debounced; give it a moment, then restore from a new instance.
-        val snapshot = File(cacheRoot, "sizes.bin")
+        // The log is appended debounced; give it a moment, then restore from a new instance.
+        val snapshot = File(cacheRoot, "sizes.log")
         withTimeoutOrNull(5_000L) {
             while (!snapshot.isFile || snapshot.length() == 0L) delay(100)
         }
-        assertTrue("size snapshot must exist", snapshot.isFile && snapshot.length() > 0L)
+        assertTrue("size log must exist", snapshot.isFile && snapshot.length() > 0L)
 
         val restored = store(onePixelPng)
         val recovered =
@@ -90,13 +90,31 @@ class PageImageStoreDeviceTest {
         assertFalse("nothing may be committed", cachedCopyOf(image).isFile)
     }
 
-    private fun store(bytes: ByteArray): PageImageStore =
+    @Test
+    fun changingTheScrambleCountInvalidatesTheCachedBytes() = runBlocking {
+        cacheRoot.deleteRecursively()
+        val requests = java.util.concurrent.atomic.AtomicInteger()
+        val store = store(onePixelPng, requests)
+        val first = image("scramble", splitCount = 1)
+        store.prepare(first)
+        assertEquals(1, requests.get())
+        assertEquals(1, store.sizeOf(first)?.splitCount)
+
+        val second = image("scramble", splitCount = 2)
+        store.prepare(second)
+
+        assertEquals("bytes must be fetched again for the new scramble", 2, requests.get())
+        assertEquals(2, store.sizeOf(second)?.splitCount)
+    }
+
+    private fun store(bytes: ByteArray, requests: java.util.concurrent.atomic.AtomicInteger? = null): PageImageStore =
         PageImageStore(
             context = context,
             userAgent = "test-agent",
             httpClient =
                 OkHttpClient.Builder()
                     .addInterceptor { chain ->
+                        requests?.incrementAndGet()
                         Response.Builder()
                             .request(chain.request())
                             .protocol(Protocol.HTTP_1_1)
@@ -108,8 +126,14 @@ class PageImageStoreDeviceTest {
                     .build(),
         )
 
-    private fun image(seed: String) =
-        PageImage(chapterId = "device-$seed", fileName = "page-$seed.png", index = 0, splitCount = 1, url = "https://img.example/page-$seed.png")
+    private fun image(seed: String, splitCount: Int = 1) =
+        PageImage(
+            chapterId = "device-$seed",
+            fileName = "page-$seed.png",
+            index = 0,
+            splitCount = splitCount,
+            url = "https://img.example/page-$seed.png",
+        )
 
     private fun cachedCopyOf(image: PageImage): File {
         val chapter = File(cacheRoot, image.chapterId)
