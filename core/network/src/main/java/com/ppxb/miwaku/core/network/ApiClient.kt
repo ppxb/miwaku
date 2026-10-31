@@ -65,6 +65,7 @@ class ApiClient(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val domainResolver = DomainResolver(probeHttpClient, userAgentValue)
+    private val jsonFlights = SingleFlight<String, ApiPayload>(scope)
     private val settingLock = Mutex()
     private val poolRefreshLock = Mutex()
     private val stateLock = Any()
@@ -160,13 +161,30 @@ class ApiClient(
     }
 
     /**
-     * Fetches a decoded API payload. Candidates are tried in rank order inside one
-     * [FAILOVER_BUDGET_MS] deadline; when every candidate fails with a failoverable error the pool
-     * is re-probed once, but only if the deadline still allows another attempt.
+     * Fetches a decoded API payload. Concurrent calls for the same path and parameters share one
+     * request; the payload itself is still fetched inside one [FAILOVER_BUDGET_MS] deadline with the
+     * candidate failover described in [loadJson].
      */
     suspend fun getJson(
         path: String,
         params: Map<String, String> = emptyMap(),
+    ): ApiPayload = jsonFlights.run(requestKey(path, params)) { loadJson(path, params) }.await()
+
+    /** Dedupe identity: the path plus the parameters in a stable order (the signed `t` is added later). */
+    private fun requestKey(
+        path: String,
+        params: Map<String, String>,
+    ): String =
+        buildString {
+            append(path)
+            params.toSortedMap().forEach { (key, value) ->
+                append('|').append(key).append('=').append(value)
+            }
+        }
+
+    private suspend fun loadJson(
+        path: String,
+        params: Map<String, String>,
     ): ApiPayload {
         val setting = ensureSetting()
         val deadlineNs = System.nanoTime() + FAILOVER_BUDGET_MS * 1_000_000L

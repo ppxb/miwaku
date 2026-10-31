@@ -2,8 +2,12 @@ package com.ppxb.miwaku.core.network
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicInteger
 import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -135,6 +139,41 @@ class EndpointJsonTest {
         val http = failure as ApiFailure.Http
         assertEquals(520, http.code)
         assertEquals("請稍後再試", http.serverMessage)
+    }
+
+    @Test
+    fun concurrentRequestsForTheSamePathHitTheNetworkOnce() = runBlocking {
+        val calls = AtomicInteger()
+        val store = FakeStateStore()
+        val client =
+            ApiClient(
+                interceptorClient { request ->
+                    val url = request.url
+                    when {
+                        url.host.contains("bytepluses") ->
+                            response(request, 200, encryptHostConfig("""{"Server":["new.net"]}"""))
+                        url.encodedPath.endsWith("nopic-.gif") -> response(request, 200, "GIF89a")
+                        url.encodedPath.startsWith("/setting") -> settingResponse(request, "https://img-new.net")
+                        url.encodedPath == "/album" -> {
+                            calls.incrementAndGet()
+                            Thread.sleep(150)
+                            apiResponse(request)
+                        }
+                        else -> response(request, 500, "{}")
+                    }
+                },
+                store,
+            )
+        // Warm the selection so the parallel calls differ only in dedupe behaviour.
+        client.ensureSetting()
+
+        val results =
+            (1..4)
+                .map { async(Dispatchers.IO) { client.getJson("/album", mapOf("id" to "7")) } }
+                .awaitAll()
+
+        assertEquals("one HTTP call for four concurrent callers", 1, calls.get())
+        assertTrue(results.all { (it.value as JSONObject).optBoolean("ok") })
     }
 
     private fun interceptorClient(handler: (Request) -> Response): OkHttpClient =
