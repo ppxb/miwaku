@@ -29,6 +29,7 @@
 
     <!-- Explore -->
     <string name="explore_title">探索</string>
+    <string name="explore_subtitle">连载更新与精选推荐</string>
     <string name="explore_empty_title">内容正在准备中</string>
     <string name="explore_empty_description">推荐分组会在这里呈现</string>
 
