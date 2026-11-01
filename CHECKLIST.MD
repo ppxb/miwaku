@@ -286,3 +286,31 @@
 
 已知工具问题：`:app:connectedDebugAndroidTest` 在结果 XML 全绿时仍返回失败（本机 AGP 9.4.1 + 模拟器 SM-A5360 的组合），判定以结果 XML 的 `tests/failures` 为准。
 
+---
+
+## 九、阅读器收口（2026-11-01）
+
+| 改动 | 文件 | 说明 |
+|---|---|---|
+| 双页解码宽度 | `ReaderPageHolder` | 解码宽度改从页面自身槽位约束取（`BoxWithConstraints`），双页槽位按半屏宽解码；单页 / 条漫不变，无约束时回退原值 |
+| 追加后预取重建 | `ReaderViewModel.appendNext` | 追加章节后按扩展列表重启预取窗口。此前预取器持追加前列表，`update()` 的 `coerceIn` 会静默夹到旧末尾，跨章后新章完全不预取 |
+| 已读接线 | `ReaderViewModel`、`ReaderPageHolder`、`ReaderScreen` | 页面绘制完成后回调；仅当末页**既已绘制、又是当前页**才 `record(completed = true)`。Pager / LazyColumn 会提前组合相邻页，只按解码判定会提前置位 |
+
+验证：
+
+- JVM 阅读器单测 23 例全绿（`PagedSlotsTest` 5 / `PageLayoutTest` 9 / `ViewerNavigationTest` 5 / `WebtoonItemsTest` 4）。
+- 设备套件 34 例：32 通过。`ImagePipelineTest.pendingRequestCanBePromotedAheadOfEarlierNearbyWork` 与 `PageImageStoreDeviceTest.sizeSnapshotSurvivesAFreshStore` 偶发失败，单独重跑各 4/4 通过；两者都不引用本次改动的 3 个文件，判为时序敏感。
+- 模拟器实测（`emulator-5554` / SDY_AN00 / Android 15，两部作品各一次）：只读第 1 页退出仍是「阅读中 · 第 1 页」；读到 24/24 与 65/65 返回详情变「已读」、按钮变「继续阅读」。
+- 跨章预取日志（连载第 1 话 65 页、下一章 54 页）：`append_done next=1483566 pages=54` 后 1ms 出现 `prefetch_start index=0 count=11`；滚到章末 `prefetch_start index=64 count=13`（若预取器仍持 65 页旧列表，该处 ahead 为空、count 只能是 3），下一章页在到达前已 `page_downloaded`。
+
+边界（实测修正上一轮判断）：
+
+- 双页半宽解码只对 `splitCount == 0` 的页生效。需解扰的页走 `Size.ORIGINAL` + `ScrambleTransformation`，不经过宽度提示；本作源图本身 960 宽，也无下采样空间。要降解扰页内存须改解扰管线（全分辨率解扰后降采样，峰值不变），不在本次范围。
+
+§二.4 需同步的两行：
+
+- 结构：现为 `ReaderScreen` 413 行 + `ReaderViewModel` 403 行 + `chrome/` 766 行 + `viewer/` 6 文件 + `source/PageSource`，共 13 文件 2 503 行，非「1 个 1650 行 Screen + 357 行 VM」。
+- 位置恢复：`offsetFraction` 有数据库列、有写入、有模型字段，但恢复只用文件名 + 页号，页内偏移未使用。
+
+未修（观察）：横竖屏切换后阅读器回到本章起始页（65/65 → 1/65 → 65/65），与 VM 的 `currentGlobal` 不一致；成因未定位，不在本次改动路径上。
+
