@@ -2,7 +2,7 @@ package com.ppxb.miwaku.ui.reader.viewer
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
@@ -58,6 +58,9 @@ private sealed interface PageLoad {
  *
  * A page can be missing because the journal evicted it between the existence check and the decode,
  * or because the download failed. Both are retried twice before the reader is asked to do anything.
+ *
+ * [imageWidthPx] is only a fallback: the decode width comes from the slot this page actually fills,
+ * so a double-page slot decodes each page at half width instead of allocating a full screen each.
  */
 @Composable
 internal fun ReaderPageHolder(
@@ -66,6 +69,8 @@ internal fun ReaderPageHolder(
     contentScale: ContentScale,
     modifier: Modifier = Modifier,
     load: suspend (ReaderPage, Boolean) -> PageSource?,
+    /** Fires once per page after it is actually painted, so completion is not a scroll event. */
+    onPageShown: (ReaderPage) -> Unit = {},
 ) {
     var attempt by remember(page.key) { mutableIntStateOf(0) }
     var failed by remember(page.key) { mutableStateOf(false) }
@@ -85,7 +90,7 @@ internal fun ReaderPageHolder(
         if (loadState is PageLoad.Failed) ReaderPerf.log { "page_load_failed key=${page.key} attempt=$attempt" }
     }
 
-    Box(
+    BoxWithConstraints(
         modifier =
             modifier
                 .clipToBounds()
@@ -93,6 +98,9 @@ internal fun ReaderPageHolder(
                 .background(MaterialTheme.colorScheme.background),
         contentAlignment = Alignment.Center,
     ) {
+        // Half of a double-page row measures to half the screen, which is also all the pixels the
+        // page can show. An unbounded slot (no constraints) keeps the caller's width.
+        val slotWidthPx = if (constraints.hasBoundedWidth) constraints.maxWidth else imageWidthPx
         when (val current = loadState) {
             PageLoad.Loading ->
                 CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 2.dp)
@@ -106,10 +114,11 @@ internal fun ReaderPageHolder(
                 PageArtwork(
                     page = page,
                     model = current.model,
-                    imageWidthPx = imageWidthPx,
+                    imageWidthPx = slotWidthPx,
                     contentScale = contentScale,
                     attempt = attempt,
                     onDecodeFailed = { failed = true },
+                    onShown = onPageShown,
                 )
         }
         if (failed && attempt >= MAX_AUTO_RETRIES) {
@@ -139,6 +148,7 @@ private fun PageArtwork(
     contentScale: ContentScale,
     attempt: Int,
     onDecodeFailed: () -> Unit,
+    onShown: (ReaderPage) -> Unit,
 ) {
     val context = LocalContext.current
     val request =
@@ -158,6 +168,7 @@ private fun PageArtwork(
     val painter = rememberAsyncImagePainter(model = request, imageLoader = pageLoader)
     val state by painter.state.collectAsStateWithLifecycle()
     var showSpinner by remember(request) { mutableStateOf(false) }
+    var shown by remember(page.key) { mutableStateOf(false) }
     val started = remember(request) { ReaderPerf.mark() }
 
     LaunchedEffect(state) {
@@ -170,8 +181,13 @@ private fun PageArtwork(
     }
     LaunchedEffect(state) {
         when (state) {
-            is AsyncImagePainter.State.Success ->
+            is AsyncImagePainter.State.Success -> {
                 ReaderPerf.log { "page_ready key=${page.key} ms=${ReaderPerf.mark() - started}" }
+                if (!shown) {
+                    shown = true
+                    onShown(page)
+                }
+            }
             is AsyncImagePainter.State.Error -> {
                 ReaderPerf.log { "page_decode_failed key=${page.key} attempt=$attempt" }
                 onDecodeFailed()

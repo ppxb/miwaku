@@ -245,6 +245,7 @@ internal fun ReaderScreen(
                                     contentScale = ContentScale.FillWidth,
                                     modifier = box.aspectRatio(ratioOf(page, sizes, fallbackRatio)),
                                     load = viewModel::loadPage,
+                                    onPageShown = viewModel::onPageShown,
                                 )
                             }
                         } else {
@@ -292,6 +293,7 @@ internal fun ReaderScreen(
                                     contentScale = ContentScale.Fit,
                                     modifier = box,
                                     load = viewModel::loadPage,
+                                    onPageShown = viewModel::onPageShown,
                                 )
                             }
                         }

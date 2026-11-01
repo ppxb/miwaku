@@ -90,6 +90,9 @@ internal class ReaderViewModel(
     /** Index into the current window, kept so neighbours resolve without reading saved state. */
     private var currentGlobal = 0
 
+    /** Pages that have actually been painted in this window; completion must not be a guess. */
+    private val shownPages = mutableSetOf<String>()
+
     /** One progress session per loaded chapter; the store drops positions from stale sessions. */
     private var session = 0L
 
@@ -114,6 +117,7 @@ internal class ReaderViewModel(
         detailJob?.cancel()
         prefetcher?.cancel()
         prefetcher = null
+        shownPages.clear()
         if (!keepContent) {
             _state.value = ReaderUiState.Loading
             _nextChapter.value = NextChapterState.Unknown
@@ -240,7 +244,32 @@ internal class ReaderViewModel(
         )
         prefetcher?.update(global)
         updateNeighbors()
+        markChapterCompletedIfAtEnd()
         if (global >= content.pages.size - APPEND_THRESHOLD) appendNext()
+    }
+
+    /**
+     * Called once a page is actually painted. A chapter closes only when its last page is both
+     * painted and the page the reader is on: a pager composes the next page early, so decoding
+     * alone is not proof the page was seen.
+     */
+    fun onPageShown(page: ReaderPage) {
+        shownPages += page.key
+        markChapterCompletedIfAtEnd()
+    }
+
+    private fun markChapterCompletedIfAtEnd() {
+        val content = _state.value as? ReaderUiState.Content ?: return
+        val page = content.pages.getOrNull(currentGlobal) ?: return
+        if (page.key !in shownPages) return
+        // Another page of the same chapter follows, so this one is not the chapter's last page.
+        if (content.pages.getOrNull(currentGlobal + 1)?.chapterId == page.chapterId) return
+        AppGraph.progress.record(
+            session,
+            albumId,
+            ReadingProgress(page.chapterId, page.image.index, page.image.fileName),
+            completed = true,
+        )
     }
 
     /** Resolves a page to something Coil can read, downloading it first when needed. */
@@ -368,6 +397,9 @@ internal class ReaderViewModel(
                     }
                 }
                 ReaderPerf.log { "append_done next=${next.id} pages=${added.size}" }
+                // The prefetcher holds the page list it was built with; without rebuilding it the
+                // appended chapter is never prefetched and every new page loads on demand.
+                (_state.value as? ReaderUiState.Content)?.let { startPrefetch(it.pages, currentGlobal) }
                 updateNeighbors()
             }
     }
