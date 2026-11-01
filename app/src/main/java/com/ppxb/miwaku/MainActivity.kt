@@ -19,6 +19,7 @@ import com.ppxb.miwaku.core.data.AppGraph
 import com.ppxb.miwaku.core.data.download.DownloadState
 import com.ppxb.miwaku.core.data.settings.ThemeMode
 import com.ppxb.miwaku.download.DownloadService
+import com.ppxb.miwaku.download.DownloadWorker
 import com.ppxb.miwaku.ui.MiwakuApp
 import com.ppxb.miwaku.ui.theme.MiwakuTheme
 import kotlinx.coroutines.flow.combine
@@ -51,6 +52,8 @@ class MainActivity : ComponentActivity() {
                         if (active) {
                             // Activity is resumed here, so Android 12+ allows a dataSync FGS start.
                             DownloadService.start(this@MainActivity)
+                            // Fallback for the case the service start is refused or the process dies.
+                            DownloadWorker.enqueue(this@MainActivity)
                             requestNotificationPermission()
                         }
                     }

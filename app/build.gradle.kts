@@ -59,6 +59,7 @@ dependencies {
     implementation(libs.haze.blur)
     implementation(libs.haze.blur.materials)
     implementation(libs.kotlinx.serialization.core)
+    implementation(libs.androidx.work.runtime.ktx)
     testImplementation(libs.junit)
     androidTestImplementation(project(":core:network"))
     androidTestImplementation(project(":core:database"))

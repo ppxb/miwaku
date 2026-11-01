@@ -92,8 +92,10 @@ class DownloadManager(
         }
     }
 
-    fun onNetworkAvailable() {
-        if (!networkAllowed()) {
+    /** Authoritative queue state for the WorkManager fallback; see [DownloadStore.hasUnfinished]. */
+    suspend fun hasUnfinished(): Boolean = store.hasUnfinished()
+
+    fun onNetworkAvailable() {        if (!networkAllowed()) {
             _waitingForWifi.value = true
             activeJobs.values.forEach { it.cancel() }
         }
@@ -161,6 +163,19 @@ class DownloadManager(
     }
 
     private suspend fun download(task: DownloadTask) {
+        // Finished pages are buffered and written in one transaction per batch, not one per page.
+        val pendingPages = ArrayList<Pair<Int, String>>()
+        val pendingLock = Mutex()
+
+        suspend fun flushPages() {
+            val batch =
+                pendingLock.withLock {
+                    if (pendingPages.isEmpty()) return@withLock emptyList()
+                    pendingPages.toList().also { pendingPages.clear() }
+                }
+            if (batch.isNotEmpty()) store.recordPages(task.chapterId, batch)
+        }
+
         try {
             if (_paused.value || !networkAllowed()) {
                 // The worker claimed the chapter to avoid double-picking; hand it back to the queue.
@@ -191,7 +206,12 @@ class DownloadManager(
                                         }
                                         // The offline copy owns the bytes now; drop any reader copy.
                                         pageStore.releaseCachedCopy(image)
-                                        store.recordPage(task.chapterId, index, page.fileName)
+                                        val flushNow =
+                                            pendingLock.withLock {
+                                                pendingPages += index to page.fileName
+                                                pendingPages.size >= PAGE_BATCH_SIZE
+                                            }
+                                        if (flushNow) flushPages()
                                         lastError = null
                                         break
                                     } catch (cancel: CancellationException) { throw cancel }
@@ -211,6 +231,7 @@ class DownloadManager(
                     }
                 }.awaitAll()
             }
+            flushPages()
             currentCoroutineContext().ensureActive()
             if (!networkAllowed()) throw WifiRequired()
             if (failures.get() > 0) {
@@ -225,12 +246,17 @@ class DownloadManager(
                 content.pages.map { DownloadedPage(it.fileName, it.splitCount) }))
             trimToStorageLimit()
         } catch (cancel: CancellationException) {
-            withContext(NonCancellable) { store.requeueRunning(task.chapterId) }
+            withContext(NonCancellable) {
+                flushPages()
+                store.requeueRunning(task.chapterId)
+            }
             throw cancel
         } catch (_: WifiRequired) {
+            flushPages()
             _waitingForWifi.value = true
             store.update(task.chapterId, DownloadState.Queued)
         } catch (_: Exception) {
+            flushPages()
             store.update(task.chapterId, DownloadState.Failed, message = "下载失败，请重试")
         }
     }
@@ -253,10 +279,7 @@ class DownloadManager(
             if (temporary.length() == 0L) throw IOException("empty page")
             if (!temporary.renameTo(target)) throw IOException("cannot commit page")
         } finally {
-            if (temporary.exists()) {
-                val trash = File(target.parentFile, ".recycle").apply { mkdirs() }
-                temporary.renameTo(File(trash, temporary.name))
-            }
+            if (temporary.exists()) temporary.delete()
         }
     }
 
@@ -265,4 +288,9 @@ class DownloadManager(
     /** 404/410 means the page itself is gone; retrying or rotating the host cannot help. */
     private fun Throwable.isPageMissing(): Boolean = this is ApiFailure.Http && (code == 404 || code == 410)
     fun close() { scope.cancel() }
+
+    private companion object {
+        /** Pages buffered before one transaction: visible progress without a write per page. */
+        const val PAGE_BATCH_SIZE = 20
+    }
 }

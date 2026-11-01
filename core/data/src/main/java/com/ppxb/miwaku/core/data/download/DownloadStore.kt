@@ -51,16 +51,37 @@ class DownloadStore(private val context: Context, private val library: LibrarySt
             pages(chapterId).map { DownloadedPage(it.fileName, it.splitCount) })
     }
 
-    suspend fun recordPage(chapterId: String, index: Int, fileName: String) {
-        val file = pageFile(chapterId, index, fileName)
+    /** Writes a whole batch of finished pages in one transaction; the queue records progress in
+     *  groups, so a 150-page chapter is a handful of writes instead of 150. */
+    suspend fun recordPages(chapterId: String, pages: List<Pair<Int, String>>) {
+        if (pages.isEmpty()) return
+        val records =
+            pages.map { (index, fileName) ->
+                val file = pageFile(chapterId, index, fileName)
+                DownloadPageRecord(
+                    chapterId,
+                    index,
+                    fileName,
+                    file.relativeTo(context.filesDir).path,
+                    file.length(),
+                )
+            }
         library.transaction {
-            if (task(chapterId) != null) putDownloadedPage(DownloadPageRecord(chapterId, index, fileName,
-                file.relativeTo(context.filesDir).path, file.length()))
+            if (task(chapterId) != null) records.forEach { putDownloadedPage(it) }
         }
     }
 
     suspend fun putManifest(chapter: DownloadedChapter) {
         withContext(Dispatchers.IO) {
+            // A process killed mid-copy leaves its temp file next to the page; nothing else sweeps
+            // this directory, so completion is the one place that can drop the leftovers.
+            val expected =
+                chapter.pages.mapIndexed { index, page ->
+                    pageFile(chapter.chapterId, index, page.fileName).name
+                }.toSet()
+            File(chapterDir(chapter.chapterId), "pages").listFiles()?.forEach { file ->
+                if (file.isFile && file.name !in expected) file.delete()
+            }
             chapter.pages.forEachIndexed { index, page ->
                 if (!valid(pageFile(chapter.chapterId, index, page.fileName))) throw IOException("offline page missing")
             }
@@ -94,6 +115,14 @@ class DownloadStore(private val context: Context, private val library: LibrarySt
             DownloadState.Queued, downloadedPages(t.chapterId).size, t.totalPages, t.message, t.updatedAt)
     }
 
+    /**
+     * Authoritative queue state for the WorkManager fallback: the task flow may not have emitted
+     * yet when a worker starts a fresh process, so it must not be trusted for this decision.
+     */
+    suspend fun hasUnfinished(): Boolean = library.read {
+        tasks().any { it.state == "Queued" || it.state == "Running" }
+    }
+
     suspend fun update(chapterId: String, state: DownloadState? = null, totalPages: Int? = null, message: String? = null) =
         library.transaction {
             val old = task(chapterId) ?: return@transaction
@@ -121,28 +150,12 @@ class DownloadStore(private val context: Context, private val library: LibrarySt
         }
     }
 
-    /** User removal is reversible: move files to the app's recycle directory first. */
+    /** User removal deletes the chapter outright: no recycle directory, same as the reference apps. */
     suspend fun deleteChapter(chapterId: String) {
-        val original = chapterDir(chapterId)
-        var recycled: File? = null
-        withContext(Dispatchers.IO) {
-            val dir = original
-            if (dir.exists()) {
-                val trash = File(context.filesDir, "recycle/downloads")
-                trash.mkdirs()
-                val target = File(trash, safe(chapterId) + "-" + System.nanoTime())
-                if (!dir.renameTo(target)) {
-                    throw IOException("cannot recycle downloaded chapter")
-                }
-                recycled = target
-            }
-        }
-        try { library.transaction { clearDownloadedPages(chapterId); removeTask(chapterId) } }
-        catch (failure: Exception) {
-            withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
-                recycled?.let { if (!original.exists()) it.renameTo(original) }
-            }
-            throw failure
+        withContext(Dispatchers.IO) { chapterDir(chapterId).deleteRecursively() }
+        library.transaction {
+            clearDownloadedPages(chapterId)
+            removeTask(chapterId)
         }
     }
 
