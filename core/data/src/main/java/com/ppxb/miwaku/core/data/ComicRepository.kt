@@ -36,10 +36,14 @@ class ComicRepository internal constructor(
         return SearchResult(json.optInt("total", comics.size), comics)
     }
 
-    suspend fun ranking(order: String, page: Int = 0): List<ComicSummary> =
+    suspend fun ranking(
+        order: String,
+        category: String,
+        page: Int = 0,
+    ): List<ComicSummary> =
         api.getJson(
             "/categories/filter",
-            mapOf("page" to "$page", "order" to "", "c" to "", "o" to order),
+            mapOf("page" to "$page", "c" to category, "o" to order),
         ).toComicList()
 
     suspend fun exploreSections(): List<ExploreSection> {

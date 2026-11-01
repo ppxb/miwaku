@@ -35,9 +35,23 @@
 
     <!-- Category -->
     <string name="category_title">分类</string>
-    <string name="category_subtitle">热门排行，更多筛选即将上线</string>
-    <string name="category_order_latest">最新</string>
-    <string name="category_order_popular">人气</string>
+    <string name="category_subtitle">按分类与排序浏览</string>
+    <string name="category_filter_latest">最新</string>
+    <string name="category_filter_doujin">同人</string>
+    <string name="category_filter_single">单本</string>
+    <string name="category_filter_short">短篇</string>
+    <string name="category_filter_another">其他</string>
+    <string name="category_filter_hanman">韩漫</string>
+    <string name="category_filter_meiman">英文</string>
+    <string name="category_filter_cosplay">Cosplay</string>
+    <string name="category_filter_3d">3D</string>
+    <string name="category_filter_team">禁漫汉化组</string>
+    <string name="category_order_new">最新</string>
+    <string name="category_order_likes">最多点赞</string>
+    <string name="category_order_total">总排行</string>
+    <string name="category_order_month">月排行</string>
+    <string name="category_order_week">周排行</string>
+    <string name="category_order_day">日排行</string>
     <string name="category_empty_title">分类即将上线</string>
     <string name="category_empty_description">题材与标签浏览正在整理</string>
 
